@@ -1,0 +1,7 @@
+# HoloMed AI - Backend Dependencies
+opencv-python       # For camera capture
+mediapipe           # For 3D hand tracking
+pyserial            # For communicating with the ESP32
+SpeechRecognition   # For voice commands
+openai-whisper      # For offline speech-to-text
+websockets          # For alternative Unity communication

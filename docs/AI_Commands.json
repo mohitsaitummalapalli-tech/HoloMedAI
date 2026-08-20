@@ -1,0 +1,24 @@
+{
+  "examples": [
+    {
+      "user_voice": "Show me the left ventricle",
+      "ai_intent": {
+        "action": "HIGHLIGHT",
+        "organ": "HEART",
+        "target_part": "LEFT_VENTRICLE",
+        "auto_zoom": true,
+        "ai_speech_response": "Highlighting the left ventricle."
+      }
+    },
+    {
+      "user_voice": "Cut it open",
+      "ai_intent": {
+        "action": "SECTION_VIEW",
+        "organ": "HEART",
+        "target_part": "ALL",
+        "auto_zoom": false,
+        "ai_speech_response": "Activating internal section view."
+      }
+    }
+  ]
+}
