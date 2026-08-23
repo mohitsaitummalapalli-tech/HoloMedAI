@@ -53,7 +53,8 @@ public class VitalsSimulationManager : MonoBehaviour
     public Slider bpmGauge;
 
     [Header("On-Screen HUD Display")]
-    public bool showVitalsHUD = true;
+    [Tooltip("Toggle with F1 or H key. Defaults to false for clean viewport.")]
+    public bool showVitalsHUD = false;
 
     // Events
     public static event Action<float, int, int, float, CardiacRhythm> OnVitalsUpdated;
@@ -76,6 +77,12 @@ public class VitalsSimulationManager : MonoBehaviour
 
     void Update()
     {
+        // 0. Toggle HUD on demand via F1 or H key
+        if (Input.GetKeyDown(KeyCode.F1) || Input.GetKeyDown(KeyCode.H))
+        {
+            showVitalsHUD = !showVitalsHUD;
+        }
+
         // 1. Smoothly interpolate vitals toward target values
         float dt = Time.deltaTime;
         heartRateBPM = Mathf.Lerp(heartRateBPM, targetBPM, dt * recoverySpeed);

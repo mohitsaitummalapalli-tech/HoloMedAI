@@ -98,7 +98,8 @@ public class GestureReceiver : MonoBehaviour
     public int totalPacketsReceived = 0;
 
     [Header("Debug & Console Options")]
-    public bool showOnScreenHUD = true;
+    [Tooltip("Toggle with F1 or H key. Defaults to false for clean viewport.")]
+    public bool showOnScreenHUD = false;
     public bool logIncomingPackets = true;
 
     // Events for external subscribers / HUD UI
@@ -205,6 +206,12 @@ public class GestureReceiver : MonoBehaviour
 
     void Update()
     {
+        // 0. Toggle HUD on demand via F1 or H key
+        if (Input.GetKeyDown(KeyCode.F1) || Input.GetKeyDown(KeyCode.H))
+        {
+            showOnScreenHUD = !showOnScreenHUD;
+        }
+
         // 1. Process queued UDP packets on Unity Main Thread
         while (incomingQueue.TryDequeue(out string rawJson))
         {

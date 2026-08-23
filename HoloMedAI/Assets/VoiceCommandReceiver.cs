@@ -55,7 +55,7 @@ public class VoiceCommandReceiver : MonoBehaviour
     [Tooltip("UDP Port for Voice Commands (Default: 5052, Gestures use 5053)")]
     public int port = 5052;
 
-    [Header("Target Hologram & Subsystems")]
+    [Header("Target Hologram & State Manager")]
     [Tooltip("Target Organ Transform. Defaults to this GameObject.")]
     public Transform targetRoot;
 
@@ -81,7 +81,8 @@ public class VoiceCommandReceiver : MonoBehaviour
     public string lastAiSpeechResponse = "";
     public string lastVoiceCommand = "IDLE";
     public int totalVoicePacketsReceived = 0;
-    public bool showOnScreenHUD = true;
+    [Tooltip("Toggle with F1 or H key. Defaults to false for clean viewport.")]
+    public bool showOnScreenHUD = false;
 
     // Events for external UI/Audio TTS subscribers
     public static event Action<VoiceCommandPayload> OnVoiceCommandReceived;
@@ -137,6 +138,12 @@ public class VoiceCommandReceiver : MonoBehaviour
 
     private void Update()
     {
+        // 0. Toggle HUD on demand via F1 or H key
+        if (Input.GetKeyDown(KeyCode.F1) || Input.GetKeyDown(KeyCode.H))
+        {
+            showOnScreenHUD = !showOnScreenHUD;
+        }
+
         // Process queued UDP packets on Unity Main Thread
         while (incomingQueue.TryDequeue(out string json))
         {
