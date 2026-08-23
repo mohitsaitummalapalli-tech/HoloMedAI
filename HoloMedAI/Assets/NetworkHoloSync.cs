@@ -323,27 +323,10 @@ public class NetworkHoloSync : MonoBehaviour
     void OnApplicationQuit() => StopNetworkServices();
 
     // -------------------------------------------------------------
-    // ON-SCREEN COLLABORATIVE TELEPRESENCE HUD
+    // ON-SCREEN COLLABORATIVE TELEPRESENCE HUD (Disabled for clean viewport)
     // -------------------------------------------------------------
     void OnGUI()
     {
-        if (!showNetworkHUD) return;
-
-        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 12;
-        boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = Color.white;
-
-        GUILayout.BeginArea(new Rect(Screen.width - 380, Screen.height - 145, 360, 135), boxStyle);
-        GUILayout.Label("<size=13><color=#00FFB4><b>MULTI-USER COLLABORATIVE SYNC</b></color></size>");
-        GUILayout.Label($"Local Client: <b>{localClientName}</b> [{localClientId}]");
-        GUILayout.Label($"Network Role: <b>{role}</b>  |  Sync Port: {syncPort}");
-
-        GUI.color = connectedPeersCount > 0 ? new Color(0f, 1f, 0.7f, 1f) : new Color(0.7f, 0.7f, 0.7f, 1f);
-        GUILayout.Label($"Active Telepresence Peers: <b>{connectedPeersCount} Connected</b>");
-        GUI.color = Color.white;
-
-        GUILayout.Label($"Packets: TX {totalPacketsSent:N0}  /  RX {totalPacketsReceived:N0}");
-        GUILayout.EndArea();
+        return; // Permanently disabled for clean 3D viewport
     }
 }

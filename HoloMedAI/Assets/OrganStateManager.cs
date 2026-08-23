@@ -293,30 +293,10 @@ public class OrganStateManager : MonoBehaviour
     }
 
     // -------------------------------------------------------------
-    // ON-SCREEN SPATIAL MEASUREMENT & RETICLE HUD
+    // ON-SCREEN SPATIAL MEASUREMENT & RETICLE HUD (Disabled for clean viewport)
     // -------------------------------------------------------------
     void OnGUI()
     {
-        if (!showMeasurementHUD) return;
-
-        bool hasActiveMeasurement = (Time.time - lastMeasurementTime) < measurementDisplayDuration;
-        if (!hasActiveMeasurement) return;
-
-        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 12;
-        boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = Color.white;
-
-        GUILayout.BeginArea(new Rect(Screen.width - 380, 20, 360, 140), boxStyle);
-        GUILayout.Label("<size=13><color=#00E5FF><b>AI SPATIAL MEASUREMENT // CALIPER</b></color></size>");
-        GUILayout.Label($"Target Zone: <b>{currentTargetStructure}</b>");
-        GUILayout.Label($"Est. Diameter / Distance: <b>{currentEstimatedDistanceMm:F1} mm</b>");
-        GUILayout.Label($"Est. Chamber Volume: <b>{currentEstimatedVolumeMl:F1} mL</b>");
-
-        GUI.color = new Color(0.2f, 1f, 0.7f, 1f);
-        GUILayout.Label($"Metric: {currentMeasurementLabel}");
-        GUI.color = Color.white;
-
-        GUILayout.EndArea();
+        return; // Permanently disabled for clean 3D viewport
     }
 }

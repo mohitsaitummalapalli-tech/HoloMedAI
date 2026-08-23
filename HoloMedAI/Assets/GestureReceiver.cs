@@ -3,155 +3,94 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using UnityEngine;
 
 /// <summary>
-/// HoloMed AI - Phase 3 Clinical Realism & Spatial Gesture Receiver
-/// File: Assets/GestureReceiver.cs
+/// HoloMed AI - Category 2: Gesture Subsystem & Command Bus
+/// File: GestureReceiver.cs
 /// 
-/// 1. Real-Time Pinch & Drag: Parses "DRAG" / "PINCH_DRAG" and applies X, Y spatial deltas to 3D localPosition.
-/// 2. Slicing & Dissection: Routes "SLICE" / "CUT" / "CROSS_SECTION_SPLIT" directly into OrganSlicer & VitalsSimulationManager.
-/// 3. Point & AI Caliper: Routes "POINT" spatial measurements to OrganStateManager.
-/// 4. Continuous Rotation & Zoom: Smooth rotation and scaling.
-/// 5. Non-Blocking UDP: Listens on Port 5053 concurrently alongside Voice (Port 5052).
+/// 1. Target Binding: Assign 3D Organ (e.g. Heart) directly in the Unity Inspector.
+/// 2. Zero UI Clutter: No OnGUI() overlays or debug text boxes rendered on screen.
+/// 3. UDP Port 5052 Listener: Background thread capturing JSON and text payloads from MediaPipe/Python.
+/// 4. Temporal Smoothing: Uses interpolation (Lerp/Slerp) with Time.deltaTime for butter-smooth motion.
+/// 5. Command Bus Parsing:
+///    - ROTATE        -> Multi-axis delta rotation (dX, dY, axis values) in Space.World
+///    - PINCH / DRAG  -> Smooth translation movement across the camera/screen plane
+///    - ZOOM          -> Dynamic localScale adjustment with min/max bounds
+///    - RESET         -> Restores baseline position, rotation, and scale
+///    - SELECT        -> Triggers highlight/selection event
 /// </summary>
 public class GestureReceiver : MonoBehaviour
 {
-    [System.Serializable]
-    public class GestureParams
-    {
-        public float delta_x;
-        public float delta_y;
-        public float angle_delta;
-        public float delta;
-        public float zoom_factor;
-        public float point_x;
-        public float point_y;
-        public float estimated_distance_mm;
-        public float estimated_volume_ml;
-        public string target_structure;
-        public string measurement_label;
-        public string action_type;
-        public bool reset_scene;
-    }
+    [Header("Target 3D Hologram Binding")]
+    [Tooltip("Drag and drop your 3D Organ (Heart) GameObject here")]
+    public Transform targetModel;
 
-    [System.Serializable]
-    public class GesturePayload
-    {
-        public string type;
-        public string action;
-        public float confidence;
-        public string category;
-        public double timestamp;
-        public GestureParams @params;
+    [Header("Motion Sensitivities")]
+    [Tooltip("Translation movement multiplier")]
+    public float moveSpeed = 5.0f;
 
-        // Legacy alias
-        public string command;
-    }
+    [Tooltip("Rotation sensitivity multiplier")]
+    public float rotateSpeed = 100.0f;
 
-    [Header("Network Configuration")]
-    [Tooltip("UDP Port for gesture telemetry (Default: 5053, Voice uses 5052)")]
-    public int udpPort = 5053;
-
-    [Header("Target 3D Hologram & Subsystems")]
-    [Tooltip("Target Transform to translate, rotate, and scale. Defaults to this GameObject if empty.")]
-    public Transform targetObject;
-
-    [Tooltip("Reference to OrganStateManager for spatial measurement display and layer toggles.")]
-    public OrganStateManager organStateManager;
-
-    [Tooltip("Reference to OrganSlicer for surgical dissection animations and trauma triggers.")]
-    public OrganSlicer organSlicer;
-
-    [Tooltip("Reference to VitalsSimulationManager for patient trauma and rhythm monitoring.")]
-    public VitalsSimulationManager vitalsManager;
-
-    [Header("Slice / Dissection Feature")]
-    [Tooltip("Optional internal cutaway / cross-section mesh toggled via CROSS_SECTION_SPLIT")]
-    public GameObject crossSectionMesh;
-
-    [Header("Spatial Motion Sensitivities")]
-    [Tooltip("Pinch drag translation multiplier (higher = faster response)")]
-    public float dragSensitivity = 14.0f;
-
-    [Tooltip("Continuous rotation speed in degrees per second")]
-    public float rotationSpeed = 100.0f;
-
-    [Tooltip("Continuous zoom scale speed per second")]
+    [Tooltip("Zoom / Scale scaling multiplier")]
     public float zoomSpeed = 2.5f;
 
-    [Tooltip("Minimum allowed local scale")]
-    public float minScale = 0.2f;
+    [Header("Temporal Smoothing")]
+    [Tooltip("Smoothing speed for position, rotation, and scale interpolation (higher = faster, lower = smoother)")]
+    [Range(1f, 30f)]
+    public float smoothingFactor = 12.0f;
 
-    [Tooltip("Maximum allowed local scale")]
-    public float maxScale = 20.0f;
+    [Header("Network Configuration")]
+    [Tooltip("UDP Port matching Python MediaPipe stream (Default: 5052)")]
+    public int udpPort = 5052;
 
-    [Tooltip("Seconds before an unrefreshed gesture automatically returns to IDLE")]
-    public float gestureTimeout = 0.40f;
+    [Header("Debug Options")]
+    [Tooltip("Set to true to log incoming UDP packets to Unity Console")]
+    public bool logIncomingPackets = false;
 
-    [Header("State Machine Monitor (Inspector Live View)")]
-    public string currentGesture = "IDLE";
-    public float currentConfidence = 0.0f;
-    public float currentDeltaX = 0.0f;
-    public float currentDeltaY = 0.0f;
-    public int totalPacketsReceived = 0;
-
-    [Header("Debug & Console Options")]
-    [Tooltip("Toggle with F1 or H key. Defaults to false for clean viewport.")]
-    public bool showOnScreenHUD = false;
-    public bool logIncomingPackets = true;
-
-    // Events for external subscribers / HUD UI
-    public static event Action<GesturePayload> OnGestureReceived;
-    public static event Action<GestureParams> OnSpatialPointMeasurement;
-    public static event Action OnSliceTriggered;
-
-    // Background Threading
+    // UDP Background Threading
     private Thread receiveThread;
     private UdpClient udpClient;
     private volatile bool isRunning = false;
     private readonly ConcurrentQueue<string> incomingQueue = new ConcurrentQueue<string>();
 
-    // Initial Transform Baselines (for Reset)
+    // Baseline Reference Transform
     private Vector3 initialPosition;
     private Quaternion initialRotation;
     private Vector3 initialScale;
 
-    private float lastPacketTime = 0.0f;
-    private string previousTriggeredAction = "";
+    // Target States for Temporal Smoothing
+    private Vector3 targetPosition;
+    private Quaternion targetRotation;
+    private Vector3 targetScale;
 
-    void Awake()
+    // Scale Constraints
+    private const float MinScale = 0.2f;
+    private const float MaxScale = 5.0f;
+
+    private void Awake()
     {
-        if (targetObject == null)
+        // Auto-assign to self if targetModel is not assigned in Inspector
+        if (targetModel == null)
         {
-            targetObject = this.transform;
+            targetModel = transform;
         }
 
-        if (organStateManager == null)
-        {
-            organStateManager = targetObject.GetComponent<OrganStateManager>();
-            if (organStateManager == null) organStateManager = FindFirstObjectByType<OrganStateManager>();
-        }
+        // Cache initial reference transform
+        initialPosition = targetModel.localPosition;
+        initialRotation = targetModel.localRotation;
+        initialScale = targetModel.localScale;
 
-        if (organSlicer == null)
-        {
-            organSlicer = targetObject.GetComponent<OrganSlicer>();
-            if (organSlicer == null) organSlicer = FindFirstObjectByType<OrganSlicer>();
-        }
-
-        if (vitalsManager == null)
-        {
-            vitalsManager = FindFirstObjectByType<VitalsSimulationManager>();
-        }
-
-        // Cache initial reference coordinates
-        initialPosition = targetObject.localPosition;
-        initialRotation = targetObject.localRotation;
-        initialScale = targetObject.localScale;
+        // Initialize target states
+        targetPosition = initialPosition;
+        targetRotation = initialRotation;
+        targetScale = initialScale;
     }
 
-    void Start()
+    private void Start()
     {
         StartUDPServer();
     }
@@ -162,19 +101,22 @@ public class GestureReceiver : MonoBehaviour
 
         try
         {
-            udpClient = new UdpClient(udpPort);
+            udpClient = new UdpClient();
+            udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, udpPort));
+
             isRunning = true;
             receiveThread = new Thread(new ThreadStart(ReceiveDatagramLoop))
             {
                 IsBackground = true,
-                Name = "HoloMed_UDP_GestureReceiver_5053"
+                Name = "HoloMed_Gesture_UDP_5052"
             };
             receiveThread.Start();
-            Debug.Log($"<color=#00FFB4>[HoloMed AI]</color> Phase 3 Spatial & Slicing GestureReceiver active on UDP port {udpPort}");
+            Debug.Log($"<color=#00FFB4>[HoloMed AI]</color> Gesture Command Bus active on port {udpPort}. Target: {targetModel.name}");
         }
         catch (Exception ex)
         {
-            Debug.LogError($"[HoloMed AI] Failed to bind Gesture UDP port {udpPort}: {ex.Message}");
+            Debug.LogError($"[HoloMed AI] Failed to bind UDP port {udpPort}: {ex.Message}");
         }
     }
 
@@ -189,263 +131,216 @@ public class GestureReceiver : MonoBehaviour
                 byte[] rawData = udpClient.Receive(ref remoteEP);
                 if (rawData != null && rawData.Length > 0)
                 {
-                    string jsonString = Encoding.UTF8.GetString(rawData);
-                    incomingQueue.Enqueue(jsonString);
+                    string payload = Encoding.UTF8.GetString(rawData);
+                    incomingQueue.Enqueue(payload);
                 }
             }
             catch (SocketException)
             {
-                // Normal on socket shutdown
+                // Expected when socket closes
             }
             catch (Exception ex)
             {
-                if (isRunning) Debug.LogError($"[GestureReceiver] Read Exception: {ex.Message}");
+                if (isRunning) Debug.LogError($"[GestureReceiver] Socket error: {ex.Message}");
             }
         }
     }
 
-    void Update()
+    private void Update()
     {
-        // 0. Toggle HUD on demand via F1 or H key
-        if (Input.GetKeyDown(KeyCode.F1) || Input.GetKeyDown(KeyCode.H))
-        {
-            showOnScreenHUD = !showOnScreenHUD;
-        }
+        if (targetModel == null) return;
 
-        // 1. Process queued UDP packets on Unity Main Thread
-        while (incomingQueue.TryDequeue(out string rawJson))
+        // Step 1: Process incoming queued UDP packets from Python
+        while (incomingQueue.TryDequeue(out string rawPayload))
         {
+            if (string.IsNullOrEmpty(rawPayload)) continue;
+
             if (logIncomingPackets)
             {
-                Debug.Log("Gesture Received: " + rawJson);
+                Debug.Log($"[GestureReceiver] RX: {rawPayload}");
             }
-            ParseIncomingJson(rawJson);
+
+            ProcessGestureCommand(rawPayload);
         }
 
-        // 2. Timeout Check: If no fresh packet received within timeout, reset to IDLE
-        if (currentGesture != "IDLE" && (Time.time - lastPacketTime) > gestureTimeout)
-        {
-            currentGesture = "IDLE";
-            currentDeltaX = 0f;
-            currentDeltaY = 0f;
-        }
-
-        // 3. Continuous State Machine: Apply spatial translation & rotation math
-        ApplyContinuousStateMachineMotion();
+        // Step 2: Apply Temporal Smoothing to prevent hand tremor / jitter
+        ApplyTemporalSmoothing();
     }
 
-    private void ParseIncomingJson(string jsonText)
+    /// <summary>
+    /// Command Bus: Parses incoming commands and updates target transformation goals.
+    /// </summary>
+    private void ProcessGestureCommand(string payload)
     {
-        if (string.IsNullOrEmpty(jsonText)) return;
+        string upper = payload.ToUpperInvariant();
+        string command = ExtractCommand(upper);
 
-        try
+        // Extract potential float parameters from JSON / text
+        float dx = ExtractFloat(payload, "delta_x", "dx", "x");
+        float dy = ExtractFloat(payload, "delta_y", "dy", "y");
+        float val = ExtractFloat(payload, "value", "angle_delta", "rot", "angle", "axis_x_value");
+        float axisXVal = ExtractFloat(payload, "axis_x_value", "rot_x");
+
+        switch (command)
         {
-            GesturePayload payload = JsonUtility.FromJson<GesturePayload>(jsonText);
-            if (payload == null) return;
-
-            string action = !string.IsNullOrEmpty(payload.action) ? payload.action : payload.command;
-            if (string.IsNullOrEmpty(action)) return;
-
-            action = action.ToUpperInvariant().Trim();
-            currentGesture = action;
-            currentConfidence = payload.confidence;
-            lastPacketTime = Time.time;
-            totalPacketsReceived++;
-
-            // Extract real-time parameter deltas
-            if (payload.@params != null)
+            // -------------------------------------------------------------
+            // ROTATE: Apply smooth delta rotation (dX & dY) in World Space
+            // -------------------------------------------------------------
+            case "ROTATE":
+            case "SPIN":
             {
-                currentDeltaX = payload.@params.delta_x;
-                currentDeltaY = payload.@params.delta_y;
+                float rotY = 0f;
+                float rotX = 0f;
 
-                // -------------------------------------------------------------
-                // 1. POINT & AI SPATIAL MEASUREMENT ROUTING
-                // -------------------------------------------------------------
-                if (action == "POINT" || action == "POINT_SELECT")
+                // Explicit Axis commands (e.g. from ESP32 Rotary or NLP)
+                if (upper.Contains("\"AXIS\": \"Y\"") || upper.Contains("'AXIS': 'Y'") || upper.Contains("AXIS: Y"))
                 {
-                    if (organStateManager != null)
-                    {
-                        organStateManager.DisplaySpatialMeasurement(
-                            payload.@params.target_structure,
-                            payload.@params.estimated_distance_mm,
-                            payload.@params.estimated_volume_ml,
-                            payload.@params.measurement_label
-                        );
-                    }
-                    OnSpatialPointMeasurement?.Invoke(payload.@params);
+                    rotY = (val != 0f ? val : rotateSpeed * Time.deltaTime);
+                    if (axisXVal != 0f) rotX = axisXVal;
                 }
-                // -------------------------------------------------------------
-                // 2. IMMEDIATE DRAG TRANSLATION
-                // -------------------------------------------------------------
-                else if (action == "DRAG" || action == "PINCH_DRAG")
+                else if (upper.Contains("\"AXIS\": \"X\"") || upper.Contains("'AXIS': 'X'") || upper.Contains("AXIS: X"))
                 {
-                    ApplyPinchDragDelta(payload.@params.delta_x, payload.@params.delta_y);
+                    rotX = (val != 0f ? val : rotateSpeed * Time.deltaTime);
                 }
+                else if (upper.Contains("CW") || upper.Contains("RIGHT"))
+                {
+                    rotY = -(val != 0f ? Mathf.Abs(val) : rotateSpeed * Time.deltaTime);
+                }
+                else if (upper.Contains("CCW") || upper.Contains("LEFT"))
+                {
+                    rotY = (val != 0f ? Mathf.Abs(val) : rotateSpeed * Time.deltaTime);
+                }
+                else
+                {
+                    // Multi-axis delta from MediaPipe HandLandmarker
+                    rotY = (dx != 0f) ? -dx * rotateSpeed : (val != 0f ? val : rotateSpeed * Time.deltaTime);
+                    rotX = (dy != 0f) ? -dy * rotateSpeed : axisXVal;
+                }
+
+                Quaternion deltaRot = Quaternion.Euler(rotX, rotY, 0f);
+                targetRotation = deltaRot * targetRotation;
+                break;
             }
 
-            OnGestureReceived?.Invoke(payload);
-
             // -------------------------------------------------------------
-            // 3. SLICE & DISSECTION ROUTING
+            // PINCH / DRAG / TRANSLATE: Smooth movement across screen plane
             // -------------------------------------------------------------
-            if ((action == "SLICE" || action == "CUT" || action == "CROSS_SECTION_SPLIT") && previousTriggeredAction != action)
-            {
-                ExecuteSliceAction();
-            }
-            else if (action == "EMERGENCY_RESET" || action == "RESET_VIEW" || action == "RESET")
-            {
-                ExecuteReset();
-                currentGesture = "IDLE";
-            }
-            else if (action == "PALM_STOP" || action == "FIST_LOCK")
-            {
-                currentGesture = "IDLE";
-                currentDeltaX = 0f;
-                currentDeltaY = 0f;
-            }
-
-            previousTriggeredAction = action;
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"[GestureReceiver] JSON Parse Error: {ex.Message}\nRaw: {jsonText}");
-        }
-    }
-
-    /// <summary>
-    /// Executes surgical slice on OrganSlicer and triggers vitals trauma spike.
-    /// </summary>
-    public void ExecuteSliceAction()
-    {
-        if (organSlicer != null)
-        {
-            organSlicer.ExecuteSlice();
-        }
-        else if (crossSectionMesh != null)
-        {
-            crossSectionMesh.SetActive(!crossSectionMesh.activeSelf);
-        }
-
-        if (vitalsManager != null)
-        {
-            vitalsManager.TriggerTraumaSpike("Gesture Surgical Slicing Incision", 1.2f);
-        }
-
-        OnSliceTriggered?.Invoke();
-        Debug.Log("<color=#FF3366><b>[GestureReceiver]</b></color> SLICE gesture routed to OrganSlicer & VitalsSimulationManager!");
-    }
-
-    /// <summary>
-    /// Applies real-time X, Y spatial delta values to the local position of the active 3D model.
-    /// </summary>
-    public void ApplyPinchDragDelta(float deltaX, float deltaY)
-    {
-        Transform target = targetObject != null ? targetObject : this.transform;
-        Vector3 dragStep = new Vector3(
-            deltaX * dragSensitivity,
-            -deltaY * dragSensitivity,
-            0f
-        );
-        target.localPosition += dragStep;
-    }
-
-    /// <summary>
-    /// Continuous State Machine applying continuous additive transformations
-    /// every frame multiplied by Time.deltaTime.
-    /// </summary>
-    private void ApplyContinuousStateMachineMotion()
-    {
-        Transform target = targetObject != null ? targetObject : this.transform;
-        float dt = Time.deltaTime;
-
-        switch (currentGesture)
-        {
-            // -------------------------------------------------------------
-            // Real-Time Pinch Drag
-            // -------------------------------------------------------------
+            case "PINCH":
             case "DRAG":
-            case "PINCH_DRAG":
-            case "TWO_HAND_PAN":
-                Vector3 continuousStep = new Vector3(
-                    currentDeltaX * dragSensitivity * dt * 45f,
-                    -currentDeltaY * dragSensitivity * dt * 45f,
-                    0f
-                );
-                target.localPosition += continuousStep;
+            case "TRANSLATE":
+            case "MOVE":
+            {
+                if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
+                {
+                    dx = 0.02f; // Fallback nudge if binary gesture is received
+                }
+
+                Vector3 deltaPos = new Vector3(dx * moveSpeed * 0.1f, -dy * moveSpeed * 0.1f, 0f);
+                targetPosition += deltaPos;
                 break;
+            }
 
             // -------------------------------------------------------------
-            // Continuous Rotation (Clockwise & Counter-Clockwise)
+            // ZOOM / SCALE: Adjust localScale within safe medical bounds
             // -------------------------------------------------------------
-            case "ROTATE_WRIST_CW":
-            case "TWO_HAND_ROTATE_CW":
-            case "ROTATE_CW":
-                target.Rotate(Vector3.up, -rotationSpeed * dt, Space.World);
-                break;
-
-            case "ROTATE_WRIST_CCW":
-            case "TWO_HAND_ROTATE_CCW":
-            case "ROTATE_CCW":
-                target.Rotate(Vector3.up, rotationSpeed * dt, Space.World);
-                break;
-
-            // -------------------------------------------------------------
-            // Continuous Zoom Scale (Spread & Close)
-            // -------------------------------------------------------------
+            case "ZOOM":
+            case "SCALE":
             case "ZOOM_SPREAD":
-            case "TWO_HAND_SCALE_UP":
-            case "ZOOM_IN":
-                float newScaleUp = Mathf.Clamp(target.localScale.x + (zoomSpeed * dt), minScale, maxScale);
-                target.localScale = Vector3.one * newScaleUp;
-                break;
-
             case "ZOOM_CLOSE":
-            case "TWO_HAND_SCALE_DOWN":
-                float newScaleDown = Mathf.Clamp(target.localScale.x - (zoomSpeed * dt), minScale, maxScale);
-                target.localScale = Vector3.one * newScaleDown;
+            {
+                float scaleFactor = 0f;
+
+                if (command == "ZOOM_SPREAD" || upper.Contains("ZOOM_IN") || upper.Contains("SCALE_UP"))
+                {
+                    scaleFactor = zoomSpeed * 0.05f;
+                }
+                else if (command == "ZOOM_CLOSE" || upper.Contains("ZOOM_OUT") || upper.Contains("SCALE_DOWN"))
+                {
+                    scaleFactor = -zoomSpeed * 0.05f;
+                }
+                else if (val != 0f)
+                {
+                    scaleFactor = val * zoomSpeed * 0.1f;
+                }
+
+                Vector3 newScale = targetScale + Vector3.one * scaleFactor;
+                float clampedX = Mathf.Clamp(newScale.x, MinScale, MaxScale);
+                targetScale = new Vector3(clampedX, clampedX, clampedX);
                 break;
+            }
 
             // -------------------------------------------------------------
-            // Point / Stopped / Locked / Idle
+            // RESET: Restore Initial Transform Coordinates
             // -------------------------------------------------------------
-            case "POINT":
-            case "PALM_STOP":
-            case "FIST_LOCK":
-            case "IDLE":
+            case "RESET":
+            {
+                targetPosition = initialPosition;
+                targetRotation = initialRotation;
+                targetScale = initialScale;
+                break;
+            }
+
+            // -------------------------------------------------------------
+            // SELECT: Trigger Component Highlight or Feedback
+            // -------------------------------------------------------------
+            case "SELECT":
+            {
+                // Optional: Pulse or trigger visual feedback on selected organ
+                break;
+            }
+
             default:
                 break;
         }
     }
 
-    public void ExecuteReset()
+    /// <summary>
+    /// Smoothly interpolates the targetModel transform towards targetPosition, targetRotation, and targetScale.
+    /// </summary>
+    private void ApplyTemporalSmoothing()
     {
-        Transform target = targetObject != null ? targetObject : this.transform;
+        float t = Mathf.Clamp01(Time.deltaTime * smoothingFactor);
 
-        target.localPosition = initialPosition;
-        target.localRotation = initialRotation;
-        target.localScale = initialScale;
+        // Smooth Position
+        targetModel.localPosition = Vector3.Lerp(targetModel.localPosition, targetPosition, t);
 
-        if (crossSectionMesh != null)
+        // Smooth Rotation
+        targetModel.localRotation = Quaternion.Slerp(targetModel.localRotation, targetRotation, t);
+
+        // Smooth Scale
+        targetModel.localScale = Vector3.Lerp(targetModel.localScale, targetScale, t);
+    }
+
+    /// <summary>
+    /// Identifies the primary command name from incoming payloads.
+    /// </summary>
+    private string ExtractCommand(string upperPayload)
+    {
+        if (upperPayload.Contains("ROTATE") || upperPayload.Contains("SPIN")) return "ROTATE";
+        if (upperPayload.Contains("PINCH") || upperPayload.Contains("DRAG") || upperPayload.Contains("TRANSLATE") || upperPayload.Contains("MOVE")) return "PINCH";
+        if (upperPayload.Contains("ZOOM_SPREAD")) return "ZOOM_SPREAD";
+        if (upperPayload.Contains("ZOOM_CLOSE")) return "ZOOM_CLOSE";
+        if (upperPayload.Contains("ZOOM") || upperPayload.Contains("SCALE")) return "ZOOM";
+        if (upperPayload.Contains("RESET")) return "RESET";
+        if (upperPayload.Contains("SELECT")) return "SELECT";
+        return "UNKNOWN";
+    }
+
+    /// <summary>
+    /// Regex helper to extract numeric values from JSON keys or string representations.
+    /// </summary>
+    private float ExtractFloat(string text, params string[] keys)
+    {
+        foreach (string key in keys)
         {
-            crossSectionMesh.SetActive(false);
+            string pattern = $"[\"']?{key}[\"']?\\s*[:=]\\s*([+-]?[0-9]*\\.?[0-9]+)";
+            Match match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            if (match.Success && float.TryParse(match.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float val))
+            {
+                return val;
+            }
         }
-
-        if (organSlicer != null)
-        {
-            organSlicer.ResetSlice();
-        }
-
-        if (organStateManager != null)
-        {
-            organStateManager.ResetOrganState();
-        }
-
-        if (vitalsManager != null)
-        {
-            vitalsManager.ResetVitals();
-        }
-
-        Debug.Log("<color=#00FFB4>[HoloMed AI]</color> Viewport, Slice, and Vitals Reset to Baseline Coordinates.");
+        return 0f;
     }
 
     private void StopUDPServer()
@@ -464,43 +359,7 @@ public class GestureReceiver : MonoBehaviour
         }
     }
 
-    void OnDisable() => StopUDPServer();
-    void OnDestroy() => StopUDPServer();
-    void OnApplicationQuit() => StopUDPServer();
-
-    // -------------------------------------------------------------
-    // ON-SCREEN DEBUG TELEMETRY HUD
-    // -------------------------------------------------------------
-    void OnGUI()
-    {
-        if (!showOnScreenHUD) return;
-
-        bool hasRecentSignal = (Time.time - lastPacketTime) < 0.6f;
-        Color statusColor = hasRecentSignal ? new Color(0f, 1f, 0.7f, 1f) : new Color(0.6f, 0.6f, 0.6f, 1f);
-
-        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 12;
-        boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = Color.white;
-
-        GUILayout.BeginArea(new Rect(20, 20, 340, 195), boxStyle);
-        GUILayout.Label("<size=13><b>HOLOMED AI // SPATIAL & SLICE PIPELINE</b></size>");
-        GUILayout.Label($"Gesture Port: {udpPort} | Voice Port: 5052");
-
-        GUI.color = statusColor;
-        GUILayout.Label($"Telemetry: {(hasRecentSignal ? "CONNECTED / STREAMING" : "WAITING FOR GESTURE...")}");
-        GUI.color = Color.white;
-
-        GUILayout.Label($"Active Gesture: <b>{currentGesture}</b> ({currentConfidence * 100:F0}%)");
-        Transform target = targetObject != null ? targetObject : this.transform;
-        GUILayout.Label($"Pos: ({target.localPosition.x:F2}, {target.localPosition.y:F2}, {target.localPosition.z:F2})");
-        GUILayout.Label($"Scale: {target.localScale.x:F2}x | Rot Y: {target.localEulerAngles.y:F0}°");
-
-        if (GUILayout.Button("Reset Scene & Vitals (Emergency)"))
-        {
-            ExecuteReset();
-        }
-
-        GUILayout.EndArea();
-    }
+    private void OnDisable() => StopUDPServer();
+    private void OnDestroy() => StopUDPServer();
+    private void OnApplicationQuit() => StopUDPServer();
 }

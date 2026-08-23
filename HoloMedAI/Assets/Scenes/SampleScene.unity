@@ -394,6 +394,7 @@ GameObject:
   - component: {fileID: 633640592}
   - component: {fileID: 633640594}
   - component: {fileID: 633640593}
+  - component: {fileID: 633640595}
   m_Layer: 0
   m_Name: SystemController
   m_TagString: Untagged
@@ -433,13 +434,14 @@ MonoBehaviour:
   organStateManager: {fileID: 1580928714}
   organSlicer: {fileID: 1580928715}
   vitalsManager: {fileID: 1580928716}
+  dicomLoader: {fileID: 0}
   highlightColor: {r: 1, g: 0.92, b: 0.016, a: 1}
   highlightDuration: 2
   rotateDuration: 0.75
   lastAiSpeechResponse: 
   lastVoiceCommand: IDLE
   totalVoicePacketsReceived: 0
-  showOnScreenHUD: 1
+  showOnScreenHUD: 0
 --- !u!114 &633640594
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -460,6 +462,24 @@ MonoBehaviour:
   maxScale: 3.5
   highlightEmissionColor: {r: 0, g: 1.5, b: 2.5, a: 1}
   dimAlbedoColor: {r: 0.2, g: 0.25, b: 0.3, a: 0.4}
+--- !u!114 &633640595
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 633640591}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a53b25ce863b1c84489aa3775cd10847, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GestureReceiver
+  targetModel: {fileID: 1580928712}
+  moveSpeed: 5
+  rotateSpeed: 100
+  zoomSpeed: 2
+  udpPort: 5053
+  logIncomingPackets: 0
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -639,24 +659,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a53b25ce863b1c84489aa3775cd10847, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GestureReceiver
-  udpPort: 5053
-  targetObject: {fileID: 1580928712}
-  organStateManager: {fileID: 1580928714}
-  organSlicer: {fileID: 1580928715}
-  vitalsManager: {fileID: 1580928716}
-  crossSectionMesh: {fileID: 0}
-  dragSensitivity: 14
-  rotationSpeed: 100
+  targetModel: {fileID: 0}
+  moveSpeed: 5
+  rotateSpeed: 100
   zoomSpeed: 2.5
-  minScale: 0.2
-  maxScale: 20
-  gestureTimeout: 0.4
-  currentGesture: IDLE
-  currentConfidence: 0
-  currentDeltaX: 0
-  currentDeltaY: 0
-  totalPacketsReceived: 0
-  showOnScreenHUD: 1
+  udpPort: 5053
   logIncomingPackets: 1
 --- !u!114 &1580928714
 MonoBehaviour:
@@ -677,9 +684,15 @@ MonoBehaviour:
   healthyTissueColor: {r: 0.85, g: 0.25, b: 0.25, a: 1}
   diseasedTissueColor: {r: 0.28, g: 0.18, b: 0.22, a: 1}
   ischemiaHighlightColor: {r: 0.15, g: 0.05, b: 0.05, a: 1}
+  currentTargetStructure: None (Point to measure)
+  currentEstimatedDistanceMm: 0
+  currentEstimatedVolumeMl: 0
+  currentMeasurementLabel: 
+  measurementDisplayDuration: 3.5
   currentOrgan: HEART
   currentPathology: HEALTHY
   isSectionCutawayActive: 0
+  showMeasurementHUD: 1
 --- !u!114 &1580928715
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -741,9 +754,32 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3e7f45a198234bc48b29c947a5180123, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DICOMVolumeLoader
+  activePatient:
+    patient_name: Anonymous Patient
+    patient_id: HM-CARDIO-8821
+    modality: CT
+    study_description: Cardiovascular CT Scan
+    series_description: Coronary 3D Angiography
+    acquisition_time: 
+  activeGeometry:
+    dim_x: 64
+    dim_y: 64
+    dim_z: 48
+    total_voxels: 196608
+    spacing_x_mm: 0.75
+    spacing_y_mm: 0.75
+    spacing_z_mm: 1.25
+  activeMetrics:
+    window_center: 40
+    window_width: 400
+    min_hounsfield: -950
+    max_hounsfield: 880
+    mean_hounsfield: 42.5
+    slice_density_profile: []
   windowCenter: 40
   windowWidth: 400
   volumeRenderer: {fileID: 1580928710}
+  generatedVolumeTexture: {fileID: 0}
   showDICOMHUD: 1
 --- !u!114 &1580928718
 MonoBehaviour:
@@ -769,6 +805,9 @@ MonoBehaviour:
   lerpSpeed: 16
   remotePointerPrefab: {fileID: 0}
   remotePointerColor: {r: 0, g: 0.9, b: 1, a: 0.8}
+  totalPacketsSent: 0
+  totalPacketsReceived: 0
+  connectedPeersCount: 0
   showNetworkHUD: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

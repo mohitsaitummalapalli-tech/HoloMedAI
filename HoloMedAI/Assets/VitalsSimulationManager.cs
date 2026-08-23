@@ -194,40 +194,10 @@ public class VitalsSimulationManager : MonoBehaviour
     }
 
     // -------------------------------------------------------------
-    // ON-SCREEN CLINICAL PATIENT VITALS HUD
+    // ON-SCREEN CLINICAL PATIENT VITALS HUD (Disabled for clean viewport)
     // -------------------------------------------------------------
     void OnGUI()
     {
-        if (!showVitalsHUD) return;
-
-        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 12;
-        boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = Color.white;
-
-        Color pulseColor = isCriticalAlarmActive ? (Mathf.Sin(Time.time * 8f) > 0 ? Color.red : Color.yellow) : new Color(0f, 1f, 0.7f, 1f);
-
-        GUILayout.BeginArea(new Rect(20, Screen.height - 350, 360, 160), boxStyle);
-        GUILayout.Label("<size=13><b>PATIENT VITALS SIMULATOR (ICU / OR)</b></size>");
-
-        GUI.color = pulseColor;
-        GUILayout.Label($"<b>HEART RATE:</b> {heartRateBPM:F0} BPM  [{currentRhythm.ToString().Replace("_", " ")}]");
-        GUI.color = Color.white;
-
-        GUILayout.Label($"<b>BLOOD PRESSURE:</b> {systolicBP}/{diastolicBP} mmHg (MAP: {(diastolicBP + (systolicBP - diastolicBP) / 3)} mmHg)");
-        
-        Color spo2Color = oxygenSpO2 < 90f ? Color.red : Color.white;
-        GUI.color = spo2Color;
-        GUILayout.Label($"<b>OXYGEN SAT (SpO2):</b> {oxygenSpO2:F1}%");
-        GUI.color = Color.white;
-
-        GUILayout.Label($"<size=11>Status: {lastTraumaEvent}</size>");
-
-        if (GUILayout.Button("Normalize Vitals (Defibrillate / Restore)"))
-        {
-            SetNormalBaseline();
-        }
-
-        GUILayout.EndArea();
+        return; // Permanently disabled for clean 3D viewport
     }
 }

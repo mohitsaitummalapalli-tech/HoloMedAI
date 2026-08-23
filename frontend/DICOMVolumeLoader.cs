@@ -249,34 +249,10 @@ public class DICOMVolumeLoader : MonoBehaviour
     }
 
     // -------------------------------------------------------------
-    // ON-SCREEN RADIOLOGICAL DICOM HUD
+    // ON-SCREEN RADIOLOGICAL DICOM HUD (Disabled for clean viewport)
     // -------------------------------------------------------------
     void OnGUI()
     {
-        if (!showDICOMHUD) return;
-
-        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 12;
-        boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = Color.white;
-
-        GUILayout.BeginArea(new Rect(Screen.width - 380, Screen.height - 350, 360, 200), boxStyle);
-        GUILayout.Label("<size=13><color=#00E5FF><b>DICOM 3D VOLUMETRIC PACS VIEWER</b></color></size>");
-        GUILayout.Label($"Patient: <b>{activePatient.patient_name}</b> ({activePatient.patient_id})");
-        GUILayout.Label($"Modality: <b>{activePatient.modality}</b> | Study: {activePatient.series_description}");
-        GUILayout.Label($"Grid: <b>{activeGeometry.dim_x} x {activeGeometry.dim_y} x {activeGeometry.dim_z}</b> ({activeGeometry.total_voxels:N0} voxels)");
-
-        GUI.color = new Color(0.2f, 1f, 0.8f, 1f);
-        GUILayout.Label($"Windowing: <b>WL {windowCenter:F0} HU  /  WW {windowWidth:F0} HU</b>");
-        GUI.color = Color.white;
-
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Angio")) ApplyPreset("CORONARY_ANGIO");
-        if (GUILayout.Button("Soft Tissue")) ApplyPreset("CARDIAC_SOFT_TISSUE");
-        if (GUILayout.Button("Bone")) ApplyPreset("BONE_CHEST_WALL");
-        if (GUILayout.Button("Lung")) ApplyPreset("LUNG_PARENCHYMA");
-        GUILayout.EndHorizontal();
-
-        GUILayout.EndArea();
+        return; // Permanently disabled for clean 3D viewport
     }
 }

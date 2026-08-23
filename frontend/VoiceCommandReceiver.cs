@@ -518,37 +518,10 @@ public class VoiceCommandReceiver : MonoBehaviour
     private void OnApplicationQuit() => StopListener();
 
     // -------------------------------------------------------------
-    // ON-SCREEN DIAGNOSTIC & AI SPEECH HUD
+    // ON-SCREEN DIAGNOSTIC & AI SPEECH HUD (Disabled for clean viewport)
     // -------------------------------------------------------------
     void OnGUI()
     {
-        if (!showOnScreenHUD) return;
-
-        bool hasRecentSignal = (Time.time - lastPacketTime) < 1.0f;
-        Color statusColor = hasRecentSignal ? new Color(0f, 1f, 0.7f, 1f) : new Color(0.6f, 0.6f, 0.6f, 1f);
-
-        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 12;
-        boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = Color.white;
-
-        GUILayout.BeginArea(new Rect(20, Screen.height - 180, 420, 160), boxStyle);
-        GUILayout.Label("<size=13><b>HOLOMED AI // CLINICAL & VOICE CORE</b></size>");
-        GUILayout.Label($"Voice Port: {port} | Total Commands: {totalVoicePacketsReceived}");
-
-        GUI.color = statusColor;
-        GUILayout.Label($"Status: {(hasRecentSignal ? "VOICE RECOGNIZED / ACTIVE" : "LISTENING (127.0.0.1:5052)...")}");
-        GUI.color = Color.white;
-
-        GUILayout.Label($"Last Command: <b>{lastVoiceCommand}</b>");
-
-        if (!string.IsNullOrEmpty(lastAiSpeechResponse))
-        {
-            GUI.color = new Color(0.2f, 0.9f, 1f, 1f);
-            GUILayout.Label($"AI: \"{lastAiSpeechResponse}\"");
-            GUI.color = Color.white;
-        }
-
-        GUILayout.EndArea();
+        return; // Permanently disabled for clean 3D viewport
     }
 }
