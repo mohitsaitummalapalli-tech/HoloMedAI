@@ -13,8 +13,8 @@ using UnityEngine;
 public class UDPReceiver : MonoBehaviour
 {
     [Header("Network Configuration")]
-    [Tooltip("UDP Port matching Python sender (default: 5052)")]
-    public int port = 5052;
+    [Tooltip("UDP Port matching the voice-command sender (default: 5053)")]
+    public int port = 5053;
 
     [Header("Debug")]
     public bool logIncomingPackets = false;

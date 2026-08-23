@@ -425,11 +425,14 @@ MonoBehaviour:
   m_GameObject: {fileID: 633640591}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: c8d1c1b9561aff349ac3c52b948c588e, type: 3}
+  m_Script: {fileID: 11500000, guid: 7b3e15f4886612d47ba849a2a9128fe2, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::UDPReceiver
+  m_EditorClassIdentifier: Assembly-CSharp::VoiceCommandReceiver
   port: 5052
-  logIncomingPackets: 0
+  targetRoot: {fileID: 1580928712}
+  highlightColor: {r: 1, g: 0.92, b: 0.016, a: 1}
+  highlightDuration: 2
+  rotateDuration: 0.75
 --- !u!114 &633640594
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -511,8 +514,9 @@ GameObject:
   - component: {fileID: 1580928711}
   - component: {fileID: 1580928710}
   - component: {fileID: 1580928709}
+  - component: {fileID: 1580928713}
   m_Layer: 0
-  m_Name: NEAREST
+  m_Name: HEART
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -611,6 +615,29 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1580928713
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580928708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a53b25ce863b1c84489aa3775cd10847, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GestureReceiver
+  udpPort: 5053
+  targetObject: {fileID: 1580928712}
+  crossSectionMesh: {fileID: 0}
+  rotationSpeed: 80
+  zoomSpeed: 2
+  dragSensitivity: 6
+  smoothingDamping: 14
+  minScale: 0.1
+  maxScale: 25
+  logIncomingPackets: 1
+  showOnScreenHUD: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

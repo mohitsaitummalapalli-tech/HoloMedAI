@@ -3,5 +3,7 @@ opencv-python       # For camera capture
 mediapipe           # For 3D hand tracking
 pyserial            # For communicating with the ESP32
 SpeechRecognition   # For voice commands
+PyAudio             # Default Windows microphone backend for SpeechRecognition
+pyttsx3             # Offline Text-to-Speech responses
 openai-whisper      # For offline speech-to-text
 websockets          # For alternative Unity communication
