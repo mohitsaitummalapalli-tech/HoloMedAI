@@ -1,23 +1,22 @@
 """
-HoloMed AI - Backend Module 2: "Ultron" AI Intent Parser & Command Orchestrator
-File: backend/ai_orchestrator.py
+================================================================================
+  HoloMed AI - "Ultron" AI Medical Intent Parser & Command Orchestrator
+  File: backend/ai_orchestrator.py
+================================================================================
+Phase 1: The AI & Visual Core
 
 Features:
-- Dual-tier natural language processing:
-    1. Fast deterministic regex/keyword rule matching for medical anatomy & hologram commands.
-    2. Extensible LLM client (OpenAI API / Ollama / Local API) for unstructured queries.
-- Context State Engine:
-    Tracks active organ (HEART, BRAIN, LUNGS), active sub-structure, section view state.
-- Output Schema:
-    {
-        "command": "HIGHLIGHT",
-        "organ": "HEART",
-        "target_part": "LEFT_VENTRICLE",
-        "auto_zoom": true,
-        "ai_speech_response": "Highlighting the left ventricle."
-    }
-- Direct UDP transmission to 127.0.0.1:5052.
-- Interactive text prompt + optional live voice microphone listener (SpeechRecognition/Whisper).
+1. Dynamic Medical Query Engine:
+   - Understands clinical questions (e.g., "what is the function of this organ?", "explain the aortic valve", "tell me about coronary artery disease").
+   - Generates comprehensive clinical/anatomical responses and packs them into the "ai_speech_response" JSON field.
+2. Layer & Pathology State Management:
+   - Detects layer visibility commands (e.g., "hide vascular layer", "show muscle layer", "isolate electrical conduction").
+   - Detects pathology/disease state toggle commands (e.g., "show diseased state", "simulate myocardial infarction", "switch to healthy model").
+   - Formats payloads with "layer_state", "target_layer", "layer_visible", and "pathology" keys.
+3. Multi-Axis Hologram Manipulation:
+   - Controls rotation, zoom, cross-section slicing, and targeted anatomical highlighting.
+4. Non-Blocking UDP Transmission:
+   - Streams JSON payloads to Unity on 127.0.0.1:5052 (Voice & AI Core).
 """
 
 import json
@@ -27,7 +26,7 @@ import socket
 import sys
 import threading
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Try optional speech recognition
 try:
@@ -38,27 +37,50 @@ except ImportError:
 
 
 class HoloMedContextEngine:
-    """State tracking engine for active organ and visualization context."""
+    """Tracks the active holographic context, organ, active layer, and pathology state."""
+
     def __init__(self, default_organ: str = "HEART"):
         self.current_organ: str = default_organ
         self.active_structure: Optional[str] = None
         self.section_view_active: bool = False
+        self.current_pathology: str = "HEALTHY"
+        self.layer_states: Dict[str, bool] = {
+            "VASCULAR": True,
+            "MUSCLE": True,
+            "ELECTRICAL": True,
+            "CHAMBERS": True,
+            "PERICARDIUM": True,
+        }
         self.zoom_level: float = 1.0
-        self.history = []
+        self.history: List[str] = []
 
-    def update_context(self, organ: Optional[str] = None, structure: Optional[str] = None, section_view: Optional[bool] = None):
+    def update_context(
+        self,
+        organ: Optional[str] = None,
+        structure: Optional[str] = None,
+        section_view: Optional[bool] = None,
+        pathology: Optional[str] = None,
+        layer_update: Optional[Tuple[str, bool]] = None,
+    ) -> None:
         if organ:
             self.current_organ = organ.upper()
         if structure is not None:
             self.active_structure = structure.upper() if structure else None
         if section_view is not None:
             self.section_view_active = section_view
+        if pathology:
+            self.current_pathology = pathology.upper()
+        if layer_update:
+            layer_name, visible = layer_update
+            self.layer_states[layer_name.upper()] = visible
 
     def get_state(self) -> Dict[str, Any]:
         return {
             "current_organ": self.current_organ,
             "active_structure": self.active_structure,
             "section_view_active": self.section_view_active,
+            "current_pathology": self.current_pathology,
+            "layer_states": self.layer_states,
             "zoom_level": self.zoom_level,
         }
 
@@ -70,21 +92,74 @@ class UltronAIOrchestrator:
         udp_port: int = 5052,
         use_llm: bool = False,
         openai_api_key: Optional[str] = None,
-        ollama_endpoint: str = "http://localhost:11434/api/generate",
     ):
         self.udp_ip = udp_ip
         self.udp_port = udp_port
         self.use_llm = use_llm
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        self.ollama_endpoint = ollama_endpoint
 
         # Network Setup
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.context = HoloMedContextEngine(default_organ="HEART")
 
-        # Anatomical Knowledge Graph & Synonyms for Rule Matcher
+        # -------------------------------------------------------------
+        # Clinical Medical Knowledge Base (Functions & Pathologies)
+        # -------------------------------------------------------------
+        self.clinical_knowledge: Dict[str, Dict[str, str]] = {
+            "HEART": {
+                "FUNCTION": "The heart is a muscular organ that pumps deoxygenated blood to the pulmonary circulation for oxygenation and distributes oxygenated blood throughout the systemic circulation via rhythmic contraction cycles (systole and diastole).",
+                "PATHOLOGY": "Common cardiac pathologies include coronary artery disease, myocardial infarction, congestive heart failure, valvular stenosis, and arrhythmias such as atrial fibrillation.",
+            },
+            "LEFT_VENTRICLE": {
+                "FUNCTION": "The left ventricle is the thickest cardiac chamber. It receives oxygenated blood from the left atrium through the mitral valve and pumps it against high systemic afterload into the aorta via the aortic valve.",
+                "PATHOLOGY": "Pathologies include left ventricular hypertrophy (LVH), dilated cardiomyopathy, and myocardial infarction secondary to left anterior descending (LAD) coronary artery occlusion.",
+            },
+            "RIGHT_VENTRICLE": {
+                "FUNCTION": "The right ventricle pumps deoxygenated blood through the pulmonary semilunar valve into the pulmonary artery toward the pulmonary capillary beds for gas exchange.",
+                "PATHOLOGY": "Pathologies include right ventricular strain, cor pulmonale secondary to pulmonary hypertension, and arrhythmogenic right ventricular cardiomyopathy.",
+            },
+            "LEFT_ATRIUM": {
+                "FUNCTION": "The left atrium receives oxygen-rich pulmonary venous return from the four pulmonary veins and contracts in late diastole to fill the left ventricle.",
+                "PATHOLOGY": "Left atrial enlargement predisposes patients to thrombus formation and thromboembolic stroke in the setting of atrial fibrillation.",
+            },
+            "RIGHT_ATRIUM": {
+                "FUNCTION": "The right atrium receives systemic deoxygenated venous return from the superior vena cava, inferior vena cava, and coronary sinus, housing the sinoatrial (SA) pacemaker node.",
+                "PATHOLOGY": "Associated conditions include atrial septal defects (ASD) and sinoatrial nodal dysfunction (sick sinus syndrome).",
+            },
+            "AORTA": {
+                "FUNCTION": "The aorta is the primary systemic conduit vessel, receiving high-pressure stroke volume from the left ventricle and distributing oxygenated blood to all organ systems through branching vascular beds.",
+                "PATHOLOGY": "Critical pathologies include ascending and descending aortic aneurysm, acute Stanford Type A and Type B aortic dissection, and coarctation of the aorta.",
+            },
+            "AORTIC_VALVE": {
+                "FUNCTION": "The aortic valve is a tricuspid semilunar valve that prevents retrograde diastolic backflow of blood from the high-pressure aorta into the left ventricle.",
+                "PATHOLOGY": "Pathologies include calcific aortic stenosis leading to systolic ejection murmurs, and aortic regurgitation resulting in left ventricular volume overload.",
+            },
+            "MITRAL_VALVE": {
+                "FUNCTION": "The bicuspid mitral valve regulates unidirectional blood flow from the left atrium to the left ventricle, anchored by chordae tendineae and papillary muscles.",
+                "PATHOLOGY": "Major conditions include mitral valve prolapse, rheumatic mitral stenosis, and ischemic mitral regurgitation.",
+            },
+            "CORONARY_ARTERY": {
+                "FUNCTION": "Coronary arteries branch from the aortic root to supply oxygenated blood, nutrients, and electrolytes directly to the active myocardium during ventricular diastole.",
+                "PATHOLOGY": "Atherosclerotic plaque accumulation produces coronary ischemia, angina pectoris, and acute ST-elevation myocardial infarction (STEMI).",
+            },
+            "MYOCARDIUM": {
+                "FUNCTION": "The myocardium consists of specialized striated cardiac muscle cells connected by intercalated discs with gap junctions, enabling rapid syncytial electrical conduction and coordinated contraction.",
+                "PATHOLOGY": "Myocarditis, ischemic necrosis (infarction), hypertrophic cardiomyopathy, and amyloid infiltration.",
+            },
+            "BRAIN": {
+                "FUNCTION": "The brain coordinates cognitive processing, sensory perception, motor control, emotional regulation, neuroendocrine secretion, and autonomic homeostasis.",
+                "PATHOLOGY": "Pathologies include ischemic and hemorrhagic cerebrovascular accidents (stroke), glioblastoma, traumatic brain injury, and neurodegenerative dementias.",
+            },
+            "LUNGS": {
+                "FUNCTION": "The lungs facilitate external respiration, providing continuous alveolar gas exchange between environmental oxygen and venous carbon dioxide across the capillary membrane.",
+                "PATHOLOGY": "Pathologies include chronic obstructive pulmonary disease (COPD), acute respiratory distress syndrome (ARDS), pneumonia, and pulmonary embolism.",
+            },
+        }
+
+        # -------------------------------------------------------------
+        # Anatomical Map & Synonyms
+        # -------------------------------------------------------------
         self.anatomy_map = {
-            # Heart Structures & Chambers
             "left ventricle": ("HEART", "LEFT_VENTRICLE", "Highlighting the left ventricle."),
             "left_ventricle": ("HEART", "LEFT_VENTRICLE", "Highlighting the left ventricle."),
             "lv": ("HEART", "LEFT_VENTRICLE", "Highlighting the left ventricle."),
@@ -97,58 +172,25 @@ class UltronAIOrchestrator:
             "right atrium": ("HEART", "RIGHT_ATRIUM", "Highlighting the right atrium."),
             "right_atrium": ("HEART", "RIGHT_ATRIUM", "Highlighting the right atrium."),
             "ra": ("HEART", "RIGHT_ATRIUM", "Highlighting the right atrium."),
-            
-            # Great Vessels & Valves
-            "aorta": ("HEART", "AORTA", "Locating and highlighting the ascending and descending aorta."),
-            "ascending aorta": ("HEART", "AORTA", "Highlighting the ascending aorta."),
-            "aortic arch": ("HEART", "AORTA", "Visualizing the aortic arch."),
+            "aorta": ("HEART", "AORTA", "Locating and highlighting the aorta."),
             "aortic valve": ("HEART", "AORTIC_VALVE", "Focusing on the aortic semilunar valve."),
-            "mitral valve": ("HEART", "MITRAL_VALVE", "Focusing on the bicuspid mitral valve structure."),
-            "bicuspid valve": ("HEART", "MITRAL_VALVE", "Focusing on the mitral valve."),
+            "mitral valve": ("HEART", "MITRAL_VALVE", "Focusing on the bicuspid mitral valve."),
             "tricuspid valve": ("HEART", "TRICUSPID_VALVE", "Focusing on the tricuspid valve."),
             "pulmonary valve": ("HEART", "PULMONARY_VALVE", "Focusing on the pulmonary valve."),
-            "pulmonary artery": ("HEART", "PULMONARY_ARTERY", "Highlighting the pulmonary trunk and artery."),
-            "pulmonary trunk": ("HEART", "PULMONARY_ARTERY", "Highlighting the pulmonary trunk."),
-            "pulmonary veins": ("HEART", "PULMONARY_VEIN", "Locating the pulmonary veins."),
-            "pulmonary vein": ("HEART", "PULMONARY_VEIN", "Locating the pulmonary veins."),
-            "superior vena cava": ("HEART", "SUPERIOR_VENA_CAVA", "Highlighting the superior vena cava."),
-            "svc": ("HEART", "SUPERIOR_VENA_CAVA", "Highlighting the superior vena cava."),
-            "inferior vena cava": ("HEART", "INFERIOR_VENA_CAVA", "Highlighting the inferior vena cava."),
-            "ivc": ("HEART", "INFERIOR_VENA_CAVA", "Highlighting the inferior vena cava."),
-            "coronary artery": ("HEART", "CORONARY_ARTERY", "Visualizing coronary arterial circulation."),
-            "coronary arteries": ("HEART", "CORONARY_ARTERY", "Visualizing coronary arterial circulation."),
+            "pulmonary artery": ("HEART", "PULMONARY_ARTERY", "Highlighting the pulmonary artery."),
+            "coronary artery": ("HEART", "CORONARY_ARTERY", "Visualizing coronary arterial vasculature."),
+            "coronary arteries": ("HEART", "CORONARY_ARTERY", "Visualizing coronary arterial vasculature."),
             "myocardium": ("HEART", "MYOCARDIUM", "Highlighting cardiac muscular tissue."),
             "septum": ("HEART", "INTERVENTRICULAR_SEPTUM", "Highlighting the interventricular septum."),
-            "interventricular septum": ("HEART", "INTERVENTRICULAR_SEPTUM", "Highlighting the interventricular septum."),
-            "apex": ("HEART", "APEX", "Focusing on the cardiac apex."),
-            "pericardium": ("HEART", "PERICARDIUM", "Visualizing the pericardial sac."),
-
-            # Brain Structures (Neurological Anatomy)
             "cerebrum": ("BRAIN", "CEREBRUM", "Highlighting the cerebral cortex."),
-            "cerebral cortex": ("BRAIN", "CEREBRUM", "Highlighting the cerebral cortex."),
             "cerebellum": ("BRAIN", "CEREBELLUM", "Highlighting the cerebellum."),
-            "frontal lobe": ("BRAIN", "FRONTAL_LOBE", "Focusing on the frontal lobe."),
-            "temporal lobe": ("BRAIN", "TEMPORAL_LOBE", "Focusing on the temporal lobe."),
-            "parietal lobe": ("BRAIN", "PARIETAL_LOBE", "Focusing on the parietal lobe."),
-            "occipital lobe": ("BRAIN", "OCCIPITAL_LOBE", "Focusing on the visual occipital lobe."),
-            "brainstem": ("BRAIN", "BRAIN_STEM", "Highlighting the brainstem and medulla."),
-            "brain stem": ("BRAIN", "BRAIN_STEM", "Highlighting the brainstem."),
-            "thalamus": ("BRAIN", "THALAMUS", "Focusing on the thalamus structure."),
-            "hypothalamus": ("BRAIN", "HYPOTHALAMUS", "Locating the hypothalamus."),
-            "hippocampus": ("BRAIN", "HIPPOCAMPUS", "Highlighting the hippocampus."),
-            "corpus callosum": ("BRAIN", "CORPUS_CALLOSUM", "Highlighting the corpus callosum."),
-
-            # Respiratory / Lung Structures
-            "lungs": ("LUNGS", "ALL", "Loading the respiratory lung model."),
-            "left lung": ("LUNGS", "LEFT_LUNG", "Highlighting the left lung lobes."),
-            "right lung": ("LUNGS", "RIGHT_LUNG", "Highlighting the right lung lobes."),
-            "trachea": ("LUNGS", "TRACHEA", "Highlighting the trachea and airway."),
-            "bronchi": ("LUNGS", "BRONCHI", "Highlighting primary and secondary bronchi."),
-            "bronchial tree": ("LUNGS", "BRONCHI", "Visualizing the bronchial tree."),
+            "brainstem": ("BRAIN", "BRAIN_STEM", "Highlighting the brainstem."),
+            "lungs": ("LUNGS", "ALL", "Visualizing the pulmonary respiratory model."),
+            "trachea": ("LUNGS", "TRACHEA", "Highlighting the trachea airway."),
         }
 
     def transmit_payload(self, payload: Dict[str, Any]) -> None:
-        """Sends command over UDP."""
+        """Sends JSON command over UDP to Unity (Port: 5052)."""
         try:
             message = json.dumps(payload, indent=2).encode("utf-8")
             self.sock.sendto(message, (self.udp_ip, self.udp_port))
@@ -157,114 +199,215 @@ class UltronAIOrchestrator:
         except Exception as e:
             print(f"[Ultron Orchestrator] UDP Error: {e}")
 
+    def _resolve_target_structure(self, query: str) -> Tuple[str, str]:
+        """Resolves target organ and sub-structure from query or context."""
+        for term, (organ, part, _) in sorted(self.anatomy_map.items(), key=lambda x: len(x[0]), reverse=True):
+            if term in query:
+                return organ, part
+        return self.context.current_organ, self.context.active_structure or "ORGAN"
+
     def parse_with_rules(self, text: str) -> Optional[Dict[str, Any]]:
-        """High-speed deterministic rule matching engine."""
+        """High-speed deterministic medical rule engine with clinical reasoning."""
         query = text.lower().strip()
 
-        # 1. Section / Cutaway View Commands
-        if re.search(r'\b(cut\s+(\w+\s+)?open|cutaway|section\s+view|cross\s+section|slice|internal\s+view|inside|dissect)\b', query):
+        # =============================================================
+        # 1. DYNAMIC MEDICAL QUERIES & CLINICAL FUNCTION INQUIRIES
+        # =============================================================
+        is_query = any(w in query for w in [
+            "function", "what does", "how does", "what is", "explain", "tell me about",
+            "clinical", "purpose", "role of", "physiology", "pathophysiology", "symptoms"
+        ])
+        if is_query:
+            organ, structure = self._resolve_target_structure(query)
+            lookup_key = structure if structure in self.clinical_knowledge else organ
+
+            if lookup_key in self.clinical_knowledge:
+                if any(p in query for p in ["disease", "pathology", "infarct", "stroke", "failure", "stenosis", "abnormal"]):
+                    clinical_text = self.clinical_knowledge[lookup_key].get("PATHOLOGY", "")
+                else:
+                    clinical_text = self.clinical_knowledge[lookup_key].get("FUNCTION", "")
+            else:
+                clinical_text = f"The {lookup_key.lower().replace('_', ' ')} is an integral anatomical component of the {organ.lower()} system."
+
+            return {
+                "command": "MEDICAL_QUERY",
+                "organ": organ,
+                "target_part": structure,
+                "query_text": text,
+                "ai_speech_response": clinical_text,
+                "auto_zoom": True,
+            }
+
+        # =============================================================
+        # 2. PATHOLOGY & DISEASE STATE TOGGLES (Healthy vs Diseased)
+        # =============================================================
+        if any(w in query for w in ["show diseased state", "diseased state", "simulate disease", "show pathology", "simulate infarction", "ischemic state", "myocardial infarction", "diseased model"]):
+            self.context.update_context(pathology="DISEASED")
+            return {
+                "command": "SET_PATHOLOGY",
+                "organ": self.context.current_organ,
+                "pathology": "DISEASED",
+                "ai_speech_response": "Simulating acute ischemic pathology with myocardial tissue discoloration.",
+            }
+
+        if any(w in query for w in ["show healthy state", "healthy state", "normal state", "healthy model", "clear pathology", "restore healthy"]):
+            self.context.update_context(pathology="HEALTHY")
+            return {
+                "command": "SET_PATHOLOGY",
+                "organ": self.context.current_organ,
+                "pathology": "HEALTHY",
+                "ai_speech_response": "Restoring healthy baseline anatomical tissue materials.",
+            }
+
+        # =============================================================
+        # 3. ANATOMICAL LAYER TOGGLE COMMANDS
+        # =============================================================
+        layer_match = re.search(r'\b(hide|show|toggle|isolate|remove|enable|disable)\s+([a-z\s]+?)\s*(layer|system|vessels)?\b', query)
+        if layer_match or any(w in query for w in ["vascular", "muscle", "myocardium", "electrical", "conduction", "chambers", "pericardium"]):
+            action_word = "hide" if any(w in query for w in ["hide", "remove", "disable", "peel"]) else "show"
+            is_visible = action_word == "show"
+
+            target_layer = "ALL"
+            if "vascular" in query or "vessel" in query or "coronary" in query or "arter" in query:
+                target_layer = "VASCULAR"
+            elif "muscle" in query or "myocardium" in query:
+                target_layer = "MUSCLE"
+            elif "electrical" in query or "conduction" in query or "pacemaker" in query:
+                target_layer = "ELECTRICAL"
+            elif "chamber" in query or "interior" in query:
+                target_layer = "CHAMBERS"
+            elif "pericardium" in query:
+                target_layer = "PERICARDIUM"
+
+            if target_layer != "ALL" or "layer" in query:
+                self.context.update_context(layer_update=(target_layer, is_visible))
+                state_str = "VISIBLE" if is_visible else "HIDDEN"
+                return {
+                    "command": "LAYER_TOGGLE",
+                    "organ": self.context.current_organ,
+                    "target_layer": target_layer,
+                    "layer_visible": is_visible,
+                    "layer_state": f"{target_layer}_{state_str}",
+                    "ai_speech_response": f"{'Enabling' if is_visible else 'Hiding'} the {target_layer.lower()} layer on the {self.context.current_organ.lower()} model.",
+                }
+
+        # =============================================================
+        # 4. SECTION / CUTAWAY / DISSECTION / SLICE
+        # =============================================================
+        if re.search(r'\b(cut|cutaway|section\s+view|cross\s+section|slice|internal\s+view|inside|dissect|open\s+up)\b', query):
             self.context.update_context(section_view=True)
             return {
                 "command": "SECTION_VIEW",
                 "organ": self.context.current_organ,
-                "target_part": "ALL",
-                "auto_zoom": False,
-                "ai_speech_response": f"Activating internal section view for {self.context.current_organ.lower()}."
+                "action": "TOGGLE_CUTAWAY",
+                "ai_speech_response": "Executing surgical cross-section plane cut to expose internal cardiac anatomy.",
             }
 
-        # 2. Reset / Default View Commands
+        # =============================================================
+        # 5. RESET / DEFAULT VIEW
+        # =============================================================
         if any(w in query for w in ["reset", "default view", "original view", "clear highlight", "unhide", "center view", "recenter"]):
-            self.context.update_context(structure=None, section_view=False)
+            self.context.update_context(structure=None, section_view=False, pathology="HEALTHY")
             return {
                 "command": "RESET",
                 "organ": self.context.current_organ,
                 "target_part": "ALL",
-                "auto_zoom": False,
-                "ai_speech_response": f"Resetting {self.context.current_organ.lower()} orientation and highlights."
+                "pathology": "HEALTHY",
+                "ai_speech_response": f"Resetting {self.context.current_organ.lower()} viewport, layers, and highlights.",
             }
 
-        # 3. Zoom Commands
+        # =============================================================
+        # 6. DICOM RADIOLOGICAL WINDOW LEVELING
+        # =============================================================
+        if re.search(r'\b(window\s+level|windowing|contrast|preset|density\s+window)\b', query) or any(w in query for w in ["angiography window", "bone window", "lung window", "soft tissue window"]):
+            preset = "CARDIAC_SOFT_TISSUE"
+            if "angio" in query or "coronary" in query or "contrast" in query:
+                preset = "CORONARY_ANGIO"
+            elif "bone" in query or "chest wall" in query or "skelet" in query:
+                preset = "BONE_CHEST_WALL"
+            elif "lung" in query or "airway" in query:
+                preset = "LUNG_PARENCHYMA"
+            elif "brain" in query or "neuro" in query:
+                preset = "BRAIN_TISSUE"
+
+            return {
+                "command": "SET_WINDOW_LEVEL",
+                "organ": self.context.current_organ,
+                "preset": preset,
+                "ai_speech_response": f"Applying radiological {preset.replace('_', ' ').lower()} window leveling preset.",
+            }
+
+        # =============================================================
+        # 7. ZOOM COMMANDS
+        # =============================================================
         if any(w in query for w in ["zoom in", "magnify", "enlarge", "closer", "zoom closer"]):
             return {
                 "command": "ZOOM",
                 "organ": self.context.current_organ,
                 "value": 1.5,
-                "auto_zoom": False,
-                "ai_speech_response": "Zooming in."
+                "ai_speech_response": "Zooming in.",
             }
         elif any(w in query for w in ["zoom out", "shrink", "reduce", "further away", "pull back"]):
             return {
                 "command": "ZOOM",
                 "organ": self.context.current_organ,
                 "value": -1.5,
-                "auto_zoom": False,
-                "ai_speech_response": "Zooming out."
+                "ai_speech_response": "Zooming out.",
             }
 
-        # 4. Rotation Commands (3D multi-axis)
+        # =============================================================
+        # 7. ROTATION COMMANDS
+        # =============================================================
         if any(w in query for w in ["rotate left", "turn left", "spin left"]):
             return {
                 "command": "ROTATE",
                 "target": self.context.current_organ,
+                "direction": "LEFT",
                 "axis": "Y",
                 "value": -45.0,
-                "ai_speech_response": "Rotating model left."
+                "ai_speech_response": "Rotating model left.",
             }
         elif any(w in query for w in ["rotate right", "turn right", "spin right"]):
             return {
                 "command": "ROTATE",
                 "target": self.context.current_organ,
+                "direction": "RIGHT",
                 "axis": "Y",
                 "value": 45.0,
-                "ai_speech_response": "Rotating model right."
-            }
-        elif any(w in query for w in ["rotate up", "tilt up", "turn up"]):
-            return {
-                "command": "ROTATE",
-                "target": self.context.current_organ,
-                "axis": "X",
-                "value": 30.0,
-                "ai_speech_response": "Tilting model upward."
-            }
-        elif any(w in query for w in ["rotate down", "tilt down", "turn down"]):
-            return {
-                "command": "ROTATE",
-                "target": self.context.current_organ,
-                "axis": "X",
-                "value": -30.0,
-                "ai_speech_response": "Tilting model downward."
+                "ai_speech_response": "Rotating model right.",
             }
 
-        # 5. Organ Switching Commands
+        # =============================================================
+        # 8. ORGAN MODEL SWITCHING
+        # =============================================================
         if any(w in query for w in ["show heart", "switch to heart", "load heart", "cardiac model", "cardiovascular"]):
             self.context.update_context(organ="HEART", structure=None)
             return {
                 "command": "LOAD_ORGAN",
                 "organ": "HEART",
                 "target_part": "ALL",
-                "auto_zoom": True,
-                "ai_speech_response": "Loading 3D holographic cardiovascular model."
+                "ai_speech_response": "Loading 3D cardiovascular heart model.",
             }
-        elif any(w in query for w in ["show brain", "switch to brain", "load brain", "neural model", "neurology"]):
+        elif any(w in query for w in ["show brain", "switch to brain", "load brain", "neural model"]):
             self.context.update_context(organ="BRAIN", structure=None)
             return {
                 "command": "LOAD_ORGAN",
                 "organ": "BRAIN",
                 "target_part": "ALL",
-                "auto_zoom": True,
-                "ai_speech_response": "Loading 3D holographic neural brain model."
+                "ai_speech_response": "Loading 3D neural brain model.",
             }
-        elif any(w in query for w in ["show lungs", "switch to lungs", "load lungs", "pulmonary model", "respiratory"]):
+        elif any(w in query for w in ["show lungs", "switch to lungs", "load lungs", "respiratory model"]):
             self.context.update_context(organ="LUNGS", structure=None)
             return {
                 "command": "LOAD_ORGAN",
                 "organ": "LUNGS",
                 "target_part": "ALL",
-                "auto_zoom": True,
-                "ai_speech_response": "Loading 3D holographic respiratory lungs model."
+                "ai_speech_response": "Loading 3D respiratory lungs model.",
             }
 
-        # 6. Anatomical Part Highlighting Search (ordered by specificity)
+        # =============================================================
+        # 9. ANATOMICAL TARGET HIGHLIGHTING
+        # =============================================================
         for term, (organ, target_part, speech_text) in sorted(self.anatomy_map.items(), key=lambda x: len(x[0]), reverse=True):
             if term in query:
                 self.context.update_context(organ=organ, structure=target_part)
@@ -273,130 +416,56 @@ class UltronAIOrchestrator:
                     "organ": organ,
                     "target_part": target_part,
                     "auto_zoom": True,
-                    "ai_speech_response": speech_text
+                    "ai_speech_response": speech_text,
                 }
 
         return None
 
-    def parse_with_llm(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extensible LLM intent extraction using local Ollama or OpenAI."""
-        prompt = f"""
-You are Ultron, the AI Medical Hologram Orchestrator for HoloMed AI.
-Current context state: {json.dumps(self.context.get_state())}
-
-Extract the anatomical target and intent from the user speech/query.
-Respond ONLY with a JSON object matching this schema:
-{{
-  "command": "HIGHLIGHT" | "SECTION_VIEW" | "ROTATE" | "ZOOM" | "RESET" | "LOAD_ORGAN",
-  "organ": "HEART" | "BRAIN" | "LUNGS",
-  "target_part": string (e.g. "LEFT_VENTRICLE", "AORTA", "ALL"),
-  "auto_zoom": boolean,
-  "ai_speech_response": string
-}}
-
-User query: "{text}"
-"""
-        # Try OpenAI if key is available
-        if self.openai_api_key:
-            try:
-                import urllib.request
-                req = urllib.request.Request(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.openai_api_key}"
-                    },
-                    data=json.dumps({
-                        "model": "gpt-4o-mini",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "response_format": {"type": "json_object"}
-                    }).encode("utf-8")
-                )
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    res_data = json.loads(response.read().decode())
-                    content = res_data["choices"][0]["message"]["content"]
-                    return json.loads(content)
-            except Exception as e:
-                print(f"[Ultron LLM] OpenAI call failed: {e}. Falling back...")
-
-        # Fallback generic default
-        return None
-
     def process_command(self, text: str) -> Dict[str, Any]:
-        """Main entry point: parses natural text and transmits resulting UDP command."""
+        """Main entry point: parses text, generates clinical payload, and transmits via UDP."""
         print(f"\n[Ultron Voice/Text Input] -> '{text}'")
 
-        # Step 1: Fast rule engine
         command_payload = self.parse_with_rules(text)
 
-        # Step 2: Extensible LLM fallback if enabled and rule didn't hit
-        if not command_payload and self.use_llm:
-            print("[Ultron] Rule not matched, querying AI reasoning engine...")
-            command_payload = self.parse_with_llm(text)
-
-        # Step 3: Default fallback if query is completely unknown
         if not command_payload:
             command_payload = {
                 "command": "UNKNOWN",
                 "organ": self.context.current_organ,
                 "target_part": None,
-                "auto_zoom": False,
-                "ai_speech_response": f"I couldn't identify a medical structure in: '{text}'. Please try again."
+                "ai_speech_response": f"I didn't recognize a specific medical command in: '{text}'. You can ask about organ function, toggle layers, or simulate pathologies.",
             }
 
-        # Transmit over UDP
         self.transmit_payload(command_payload)
         return command_payload
-
-    def start_voice_listener(self) -> None:
-        """Background thread listening for spoken microphone commands."""
-        if not SPEECH_AVAILABLE:
-            print("[Ultron Voice] SpeechRecognition library not installed. Voice listener disabled.")
-            return
-
-        recognizer = sr.Recognizer()
-        try:
-            mic = sr.Microphone()
-        except Exception as e:
-            print(f"[Ultron Voice] Microphone initialization failed: {e}")
-            return
-
-        print("[Ultron Voice] Listening on default microphone... (Speak medical commands)")
-        while True:
-            try:
-                with mic as source:
-                    recognizer.adjust_for_ambient_noise(source, duration=0.6)
-                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=8)
-                text = recognizer.recognize_google(audio)
-                self.process_command(text)
-            except (sr.WaitTimeoutError, sr.UnknownValueError):
-                pass
-            except Exception as e:
-                time.sleep(1)
 
 
 def run_interactive_cli():
     orchestrator = UltronAIOrchestrator()
-    print("=" * 60)
-    print("  HoloMed AI - 'Ultron' Medical Command Orchestrator")
-    print("=" * 60)
-    print("Enter voice/text queries (e.g. 'Show me the left ventricle', 'Cut it open', 'Locate the aorta')")
-    print("Type 'mic' to toggle live microphone listening, or 'exit' to quit.\n")
+    print("=" * 70)
+    print("  HoloMed AI - 'Ultron' Medical Command Orchestrator (Port 5052)")
+    print("=" * 70)
+    print("Examples:")
+    print("  - Clinical Query: 'What is the function of the left ventricle?'")
+    print("  - Layer Toggle:   'Hide vascular layer', 'Show muscle layer'")
+    print("  - Pathology:      'Show diseased state', 'Show healthy state'")
+    print("  - Manipulation:   'Rotate right', 'Slice open', 'Highlight aorta'")
+    print("=" * 70)
 
-    # Run quick self-test against docs/AI_Commands.json examples
+    # Run quick automated verification test
     test_queries = [
-        "Show me the left ventricle",
+        "What is the function of the left ventricle?",
+        "Hide vascular layer",
+        "Show diseased state",
+        "Highlight aorta",
+        "Show healthy state",
         "Cut it open",
-        "Locate the aorta",
-        "Focus on the mitral valve",
-        "Reset model",
     ]
-    print("[Self-Test] Running standard verification queries...")
+    print("\n[Self-Test] Running Phase 1 verification queries...")
     for q in test_queries:
         orchestrator.process_command(q)
-        time.sleep(0.1)
+        time.sleep(0.05)
 
-    print("\n[Ultron Ready] Enter commands below:")
+    print("\n[Ultron Ready] Enter queries below (or 'exit' to quit):")
     while True:
         try:
             user_input = input("\n[HoloMed AI Prompt] > ").strip()
@@ -404,11 +473,6 @@ def run_interactive_cli():
                 continue
             if user_input.lower() in ["exit", "quit"]:
                 break
-            if user_input.lower() == "mic":
-                t = threading.Thread(target=orchestrator.start_voice_listener, daemon=True)
-                t.start()
-                continue
-
             orchestrator.process_command(user_input)
         except (KeyboardInterrupt, EOFError):
             print("\nExiting Ultron Orchestrator.")

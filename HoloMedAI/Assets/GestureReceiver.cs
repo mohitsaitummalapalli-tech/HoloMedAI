@@ -7,14 +7,14 @@ using System.Threading;
 using UnityEngine;
 
 /// <summary>
-/// HoloMed AI - Continuous State Machine Gesture Receiver
+/// HoloMed AI - Phase 3 Clinical Realism & Spatial Gesture Receiver
 /// File: Assets/GestureReceiver.cs
 /// 
-/// 1. Continuous Rotation: When currentGesture is ROTATE_WRIST_CW or ROTATE_WRIST_CCW,
-///    applies continuous transform.Rotate() multiplied by rotationSpeed and Time.deltaTime.
-/// 2. Slice / Cross-Section: When CROSS_SECTION_SPLIT is received, toggles crossSectionMesh.SetActive().
-/// 3. Continuous Zoom & Drag: Continuous localScale and position delta updates.
-/// 4. Non-Blocking UDP: Listens on Port 5053 concurrently alongside Voice (Port 5052).
+/// 1. Real-Time Pinch & Drag: Parses "DRAG" / "PINCH_DRAG" and applies X, Y spatial deltas to 3D localPosition.
+/// 2. Slicing & Dissection: Routes "SLICE" / "CUT" / "CROSS_SECTION_SPLIT" directly into OrganSlicer & VitalsSimulationManager.
+/// 3. Point & AI Caliper: Routes "POINT" spatial measurements to OrganStateManager.
+/// 4. Continuous Rotation & Zoom: Smooth rotation and scaling.
+/// 5. Non-Blocking UDP: Listens on Port 5053 concurrently alongside Voice (Port 5052).
 /// </summary>
 public class GestureReceiver : MonoBehaviour
 {
@@ -26,6 +26,12 @@ public class GestureReceiver : MonoBehaviour
         public float angle_delta;
         public float delta;
         public float zoom_factor;
+        public float point_x;
+        public float point_y;
+        public float estimated_distance_mm;
+        public float estimated_volume_ml;
+        public string target_structure;
+        public string measurement_label;
         public string action_type;
         public bool reset_scene;
     }
@@ -48,23 +54,32 @@ public class GestureReceiver : MonoBehaviour
     [Tooltip("UDP Port for gesture telemetry (Default: 5053, Voice uses 5052)")]
     public int udpPort = 5053;
 
-    [Header("Target 3D Hologram")]
-    [Tooltip("Target Transform to rotate, scale, and pan. Defaults to this GameObject if empty.")]
+    [Header("Target 3D Hologram & Subsystems")]
+    [Tooltip("Target Transform to translate, rotate, and scale. Defaults to this GameObject if empty.")]
     public Transform targetObject;
+
+    [Tooltip("Reference to OrganStateManager for spatial measurement display and layer toggles.")]
+    public OrganStateManager organStateManager;
+
+    [Tooltip("Reference to OrganSlicer for surgical dissection animations and trauma triggers.")]
+    public OrganSlicer organSlicer;
+
+    [Tooltip("Reference to VitalsSimulationManager for patient trauma and rhythm monitoring.")]
+    public VitalsSimulationManager vitalsManager;
 
     [Header("Slice / Dissection Feature")]
     [Tooltip("Optional internal cutaway / cross-section mesh toggled via CROSS_SECTION_SPLIT")]
     public GameObject crossSectionMesh;
 
-    [Header("Continuous Motion Speeds")]
+    [Header("Spatial Motion Sensitivities")]
+    [Tooltip("Pinch drag translation multiplier (higher = faster response)")]
+    public float dragSensitivity = 14.0f;
+
     [Tooltip("Continuous rotation speed in degrees per second")]
     public float rotationSpeed = 100.0f;
 
     [Tooltip("Continuous zoom scale speed per second")]
     public float zoomSpeed = 2.5f;
-
-    [Tooltip("Pinch drag translation speed")]
-    public float dragSensitivity = 12.0f;
 
     [Tooltip("Minimum allowed local scale")]
     public float minScale = 0.2f;
@@ -86,8 +101,10 @@ public class GestureReceiver : MonoBehaviour
     public bool showOnScreenHUD = true;
     public bool logIncomingPackets = true;
 
-    // Events for external subscribers
+    // Events for external subscribers / HUD UI
     public static event Action<GesturePayload> OnGestureReceived;
+    public static event Action<GestureParams> OnSpatialPointMeasurement;
+    public static event Action OnSliceTriggered;
 
     // Background Threading
     private Thread receiveThread;
@@ -95,7 +112,7 @@ public class GestureReceiver : MonoBehaviour
     private volatile bool isRunning = false;
     private readonly ConcurrentQueue<string> incomingQueue = new ConcurrentQueue<string>();
 
-    // Initial Transform Baselines (for Emergency Reset)
+    // Initial Transform Baselines (for Reset)
     private Vector3 initialPosition;
     private Quaternion initialRotation;
     private Vector3 initialScale;
@@ -108,6 +125,23 @@ public class GestureReceiver : MonoBehaviour
         if (targetObject == null)
         {
             targetObject = this.transform;
+        }
+
+        if (organStateManager == null)
+        {
+            organStateManager = targetObject.GetComponent<OrganStateManager>();
+            if (organStateManager == null) organStateManager = FindFirstObjectByType<OrganStateManager>();
+        }
+
+        if (organSlicer == null)
+        {
+            organSlicer = targetObject.GetComponent<OrganSlicer>();
+            if (organSlicer == null) organSlicer = FindFirstObjectByType<OrganSlicer>();
+        }
+
+        if (vitalsManager == null)
+        {
+            vitalsManager = FindFirstObjectByType<VitalsSimulationManager>();
         }
 
         // Cache initial reference coordinates
@@ -135,7 +169,7 @@ public class GestureReceiver : MonoBehaviour
                 Name = "HoloMed_UDP_GestureReceiver_5053"
             };
             receiveThread.Start();
-            Debug.Log($"<color=#00FFB4>[HoloMed AI]</color> GestureReceiver active on UDP port {udpPort} (Voice on 5052)");
+            Debug.Log($"<color=#00FFB4>[HoloMed AI]</color> Phase 3 Spatial & Slicing GestureReceiver active on UDP port {udpPort}");
         }
         catch (Exception ex)
         {
@@ -189,7 +223,7 @@ public class GestureReceiver : MonoBehaviour
             currentDeltaY = 0f;
         }
 
-        // 3. Continuous State Machine: Apply motion math every frame
+        // 3. Continuous State Machine: Apply spatial translation & rotation math
         ApplyContinuousStateMachineMotion();
     }
 
@@ -216,23 +250,45 @@ public class GestureReceiver : MonoBehaviour
             {
                 currentDeltaX = payload.@params.delta_x;
                 currentDeltaY = payload.@params.delta_y;
+
+                // -------------------------------------------------------------
+                // 1. POINT & AI SPATIAL MEASUREMENT ROUTING
+                // -------------------------------------------------------------
+                if (action == "POINT" || action == "POINT_SELECT")
+                {
+                    if (organStateManager != null)
+                    {
+                        organStateManager.DisplaySpatialMeasurement(
+                            payload.@params.target_structure,
+                            payload.@params.estimated_distance_mm,
+                            payload.@params.estimated_volume_ml,
+                            payload.@params.measurement_label
+                        );
+                    }
+                    OnSpatialPointMeasurement?.Invoke(payload.@params);
+                }
+                // -------------------------------------------------------------
+                // 2. IMMEDIATE DRAG TRANSLATION
+                // -------------------------------------------------------------
+                else if (action == "DRAG" || action == "PINCH_DRAG")
+                {
+                    ApplyPinchDragDelta(payload.@params.delta_x, payload.@params.delta_y);
+                }
             }
 
             OnGestureReceived?.Invoke(payload);
 
-            // One-shot discrete triggers
-            if (action == "CROSS_SECTION_SPLIT" && previousTriggeredAction != "CROSS_SECTION_SPLIT")
+            // -------------------------------------------------------------
+            // 3. SLICE & DISSECTION ROUTING
+            // -------------------------------------------------------------
+            if ((action == "SLICE" || action == "CUT" || action == "CROSS_SECTION_SPLIT") && previousTriggeredAction != action)
             {
-                ToggleCrossSection();
+                ExecuteSliceAction();
             }
             else if (action == "EMERGENCY_RESET" || action == "RESET_VIEW" || action == "RESET")
             {
                 ExecuteReset();
                 currentGesture = "IDLE";
-            }
-            else if (action == "AIR_TAP")
-            {
-                Debug.Log("<color=#00FFB4>[HoloMed AI]</color> AIR TAP Triggered (Raycast/Select)");
             }
             else if (action == "PALM_STOP" || action == "FIST_LOCK")
             {
@@ -250,8 +306,45 @@ public class GestureReceiver : MonoBehaviour
     }
 
     /// <summary>
+    /// Executes surgical slice on OrganSlicer and triggers vitals trauma spike.
+    /// </summary>
+    public void ExecuteSliceAction()
+    {
+        if (organSlicer != null)
+        {
+            organSlicer.ExecuteSlice();
+        }
+        else if (crossSectionMesh != null)
+        {
+            crossSectionMesh.SetActive(!crossSectionMesh.activeSelf);
+        }
+
+        if (vitalsManager != null)
+        {
+            vitalsManager.TriggerTraumaSpike("Gesture Surgical Slicing Incision", 1.2f);
+        }
+
+        OnSliceTriggered?.Invoke();
+        Debug.Log("<color=#FF3366><b>[GestureReceiver]</b></color> SLICE gesture routed to OrganSlicer & VitalsSimulationManager!");
+    }
+
+    /// <summary>
+    /// Applies real-time X, Y spatial delta values to the local position of the active 3D model.
+    /// </summary>
+    public void ApplyPinchDragDelta(float deltaX, float deltaY)
+    {
+        Transform target = targetObject != null ? targetObject : this.transform;
+        Vector3 dragStep = new Vector3(
+            deltaX * dragSensitivity,
+            -deltaY * dragSensitivity,
+            0f
+        );
+        target.localPosition += dragStep;
+    }
+
+    /// <summary>
     /// Continuous State Machine applying continuous additive transformations
-    /// every frame multiplied by rotationSpeed and Time.deltaTime.
+    /// every frame multiplied by Time.deltaTime.
     /// </summary>
     private void ApplyContinuousStateMachineMotion()
     {
@@ -261,7 +354,21 @@ public class GestureReceiver : MonoBehaviour
         switch (currentGesture)
         {
             // -------------------------------------------------------------
-            // 1. Continuous Rotation (Clockwise & Counter-Clockwise)
+            // Real-Time Pinch Drag
+            // -------------------------------------------------------------
+            case "DRAG":
+            case "PINCH_DRAG":
+            case "TWO_HAND_PAN":
+                Vector3 continuousStep = new Vector3(
+                    currentDeltaX * dragSensitivity * dt * 45f,
+                    -currentDeltaY * dragSensitivity * dt * 45f,
+                    0f
+                );
+                target.localPosition += continuousStep;
+                break;
+
+            // -------------------------------------------------------------
+            // Continuous Rotation (Clockwise & Counter-Clockwise)
             // -------------------------------------------------------------
             case "ROTATE_WRIST_CW":
             case "TWO_HAND_ROTATE_CW":
@@ -276,7 +383,7 @@ public class GestureReceiver : MonoBehaviour
                 break;
 
             // -------------------------------------------------------------
-            // 2. Continuous Zoom Scale (Spread & Close)
+            // Continuous Zoom Scale (Spread & Close)
             // -------------------------------------------------------------
             case "ZOOM_SPREAD":
             case "TWO_HAND_SCALE_UP":
@@ -287,49 +394,19 @@ public class GestureReceiver : MonoBehaviour
 
             case "ZOOM_CLOSE":
             case "TWO_HAND_SCALE_DOWN":
-            case "ZOOM_OUT":
                 float newScaleDown = Mathf.Clamp(target.localScale.x - (zoomSpeed * dt), minScale, maxScale);
                 target.localScale = Vector3.one * newScaleDown;
                 break;
 
             // -------------------------------------------------------------
-            // 3. Continuous Pinch Drag & Translation
+            // Point / Stopped / Locked / Idle
             // -------------------------------------------------------------
-            case "PINCH_DRAG":
-            case "TWO_HAND_PAN":
-                Vector3 dragStep = new Vector3(
-                    currentDeltaX * dragSensitivity * dt * 60f,
-                    -currentDeltaY * dragSensitivity * dt * 60f,
-                    0f
-                );
-                target.position += dragStep;
-                break;
-
-            // -------------------------------------------------------------
-            // 4. Stopped / Locked / Idle
-            // -------------------------------------------------------------
+            case "POINT":
             case "PALM_STOP":
             case "FIST_LOCK":
             case "IDLE":
             default:
-                // No continuous motion applied
                 break;
-        }
-    }
-
-    /// <summary>
-    /// Toggles the Slice / Cutaway internal mesh.
-    /// </summary>
-    public void ToggleCrossSection()
-    {
-        if (crossSectionMesh != null)
-        {
-            crossSectionMesh.SetActive(!crossSectionMesh.activeSelf);
-            Debug.Log($"<color=#00FFB4>[HoloMed AI]</color> Cross-Section Slice Toggled: {crossSectionMesh.activeSelf}");
-        }
-        else
-        {
-            Debug.LogWarning("[GestureReceiver] Slice Triggered but 'crossSectionMesh' is not assigned in Inspector!");
         }
     }
 
@@ -346,7 +423,22 @@ public class GestureReceiver : MonoBehaviour
             crossSectionMesh.SetActive(false);
         }
 
-        Debug.Log("<color=#00FFB4>[HoloMed AI]</color> Viewport Reset to Baseline Coordinates.");
+        if (organSlicer != null)
+        {
+            organSlicer.ResetSlice();
+        }
+
+        if (organStateManager != null)
+        {
+            organStateManager.ResetOrganState();
+        }
+
+        if (vitalsManager != null)
+        {
+            vitalsManager.ResetVitals();
+        }
+
+        Debug.Log("<color=#00FFB4>[HoloMed AI]</color> Viewport, Slice, and Vitals Reset to Baseline Coordinates.");
     }
 
     private void StopUDPServer()
@@ -384,19 +476,20 @@ public class GestureReceiver : MonoBehaviour
         boxStyle.alignment = TextAnchor.UpperLeft;
         boxStyle.normal.textColor = Color.white;
 
-        GUILayout.BeginArea(new Rect(20, 20, 330, 185), boxStyle);
-        GUILayout.Label("<size=13><b>HOLOMED AI // GESTURE & VOICE PIPELINE</b></size>");
+        GUILayout.BeginArea(new Rect(20, 20, 340, 195), boxStyle);
+        GUILayout.Label("<size=13><b>HOLOMED AI // SPATIAL & SLICE PIPELINE</b></size>");
         GUILayout.Label($"Gesture Port: {udpPort} | Voice Port: 5052");
 
         GUI.color = statusColor;
         GUILayout.Label($"Telemetry: {(hasRecentSignal ? "CONNECTED / STREAMING" : "WAITING FOR GESTURE...")}");
         GUI.color = Color.white;
 
-        GUILayout.Label($"Current Gesture: <b>{currentGesture}</b> ({currentConfidence * 100:F0}%)");
+        GUILayout.Label($"Active Gesture: <b>{currentGesture}</b> ({currentConfidence * 100:F0}%)");
         Transform target = targetObject != null ? targetObject : this.transform;
+        GUILayout.Label($"Pos: ({target.localPosition.x:F2}, {target.localPosition.y:F2}, {target.localPosition.z:F2})");
         GUILayout.Label($"Scale: {target.localScale.x:F2}x | Rot Y: {target.localEulerAngles.y:F0}°");
 
-        if (GUILayout.Button("Reset Viewport (Emergency)"))
+        if (GUILayout.Button("Reset Scene & Vitals (Emergency)"))
         {
             ExecuteReset();
         }

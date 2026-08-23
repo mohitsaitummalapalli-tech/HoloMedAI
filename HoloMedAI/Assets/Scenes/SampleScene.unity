@@ -430,9 +430,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoiceCommandReceiver
   port: 5052
   targetRoot: {fileID: 1580928712}
+  organStateManager: {fileID: 1580928714}
+  organSlicer: {fileID: 1580928715}
+  vitalsManager: {fileID: 1580928716}
   highlightColor: {r: 1, g: 0.92, b: 0.016, a: 1}
   highlightDuration: 2
   rotateDuration: 0.75
+  lastAiSpeechResponse: 
+  lastVoiceCommand: IDLE
+  totalVoicePacketsReceived: 0
+  showOnScreenHUD: 1
 --- !u!114 &633640594
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -515,6 +522,11 @@ GameObject:
   - component: {fileID: 1580928710}
   - component: {fileID: 1580928709}
   - component: {fileID: 1580928713}
+  - component: {fileID: 1580928714}
+  - component: {fileID: 1580928715}
+  - component: {fileID: 1580928716}
+  - component: {fileID: 1580928717}
+  - component: {fileID: 1580928718}
   m_Layer: 0
   m_Name: HEART
   m_TagString: Untagged
@@ -629,15 +641,135 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::GestureReceiver
   udpPort: 5053
   targetObject: {fileID: 1580928712}
+  organStateManager: {fileID: 1580928714}
+  organSlicer: {fileID: 1580928715}
+  vitalsManager: {fileID: 1580928716}
   crossSectionMesh: {fileID: 0}
-  rotationSpeed: 80
-  zoomSpeed: 2
-  dragSensitivity: 6
-  smoothingDamping: 14
-  minScale: 0.1
-  maxScale: 25
-  logIncomingPackets: 1
+  dragSensitivity: 14
+  rotationSpeed: 100
+  zoomSpeed: 2.5
+  minScale: 0.2
+  maxScale: 20
+  gestureTimeout: 0.4
+  currentGesture: IDLE
+  currentConfidence: 0
+  currentDeltaX: 0
+  currentDeltaY: 0
+  totalPacketsReceived: 0
   showOnScreenHUD: 1
+  logIncomingPackets: 1
+--- !u!114 &1580928714
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580928708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8c4f17a9426612d47ba849a2a9128fef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::OrganStateManager
+  organRoot: {fileID: 1580928712}
+  layers: []
+  healthyMaterial: {fileID: 0}
+  diseasedMaterial: {fileID: 0}
+  healthyTissueColor: {r: 0.85, g: 0.25, b: 0.25, a: 1}
+  diseasedTissueColor: {r: 0.28, g: 0.18, b: 0.22, a: 1}
+  ischemiaHighlightColor: {r: 0.15, g: 0.05, b: 0.05, a: 1}
+  currentOrgan: HEART
+  currentPathology: HEALTHY
+  isSectionCutawayActive: 0
+--- !u!114 &1580928715
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580928708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a8d34b2567843e49ac3c52b948c599b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::OrganSlicer
+  crossSectionCutaway: {fileID: 0}
+  slicePlaneIndicator: {fileID: 0}
+  leftHalf: {fileID: 0}
+  rightHalf: {fileID: 0}
+  vitalsManager: {fileID: 1580928716}
+  separationDistance: 0.6
+  sliceAnimDuration: 0.5
+  isSliced: 0
+--- !u!114 &1580928716
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580928708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9d5e28a1537724d47ba849a2a9128f01, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VitalsSimulationManager
+  heartRateBPM: 75
+  systolicBP: 120
+  diastolicBP: 80
+  oxygenSpO2: 98.5
+  currentRhythm: 0
+  baselineBPM: 75
+  baselineSystolic: 120
+  baselineDiastolic: 80
+  baselineSpO2: 98.5
+  recoverySpeed: 0.8
+  traumaSpikeBPM: 138
+  bpmText: {fileID: 0}
+  bpText: {fileID: 0}
+  spo2Text: {fileID: 0}
+  rhythmText: {fileID: 0}
+  bpmGauge: {fileID: 0}
+  showVitalsHUD: 1
+--- !u!114 &1580928717
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580928708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3e7f45a198234bc48b29c947a5180123, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DICOMVolumeLoader
+  windowCenter: 40
+  windowWidth: 400
+  volumeRenderer: {fileID: 1580928710}
+  showDICOMHUD: 1
+--- !u!114 &1580928718
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580928708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5c8e31a274984be48b11c953a6270456, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::NetworkHoloSync
+  syncPort: 5055
+  broadcastAddress: 255.255.255.255
+  role: 1
+  localClientId: CL-8821
+  localClientName: Dr. Surgeon (Primary Hololens)
+  targetOrgan: {fileID: 1580928712}
+  organStateManager: {fileID: 1580928714}
+  organSlicer: {fileID: 1580928715}
+  sendRateHz: 30
+  lerpSpeed: 16
+  remotePointerPrefab: {fileID: 0}
+  remotePointerColor: {r: 0, g: 0.9, b: 1, a: 0.8}
+  showNetworkHUD: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

@@ -1,27 +1,17 @@
 """
 ================================================================================
-  HoloMed AI - Essential 8 Gesture Engine (MediaPipe Tasks API + UDP 5053)
+  HoloMed AI - Phase 2: Advanced Spatial Interaction Gesture Engine
   File: backend/gesture_engine.py
 ================================================================================
-Streamlined, zero-lag gesture recognition engine implementing strictly the
-Essential 8 Gestures with MediaPipe Tasks API and high-contrast HUD.
+Detects MediaPipe Hands landmarks in real-time, calculates:
+1. PINCH & DRAG: Tracks Thumb-Index distance and spatial delta (X, Y) -> emits "DRAG".
+2. POINT & SPATIAL MEASUREMENT: Evaluates point vector -> emits "POINT" with distance/volume.
+3. CONTINUOUS ROTATION (ROTATE_WRIST_CW / CCW)
+4. RADIAL VOLUMETRIC ZOOM (ZOOM_SPREAD / CLOSE)
+5. PALM_STOP & FIST_LOCK (Freeze / Lock)
+6. Bimanual CROSS_SECTION_SPLIT & EMERGENCY_RESET
 
-Essential 8 Gestures:
-1. PINCH_DRAG: Thumb tip (4) & Index tip (8) distance < 0.05, tracking delta_x, delta_y.
-2. ROTATE_WRIST_CW / ROTATE_WRIST_CCW: Wrist-to-index angle rotation (+CW, -CCW).
-3. ZOOM_SPREAD / ZOOM_CLOSE: Radial fingertip expansion / contraction from palm.
-4. PALM_STOP: All 5 fingers extended, velocity < 0.3 (Freeze motion).
-5. AIR_TAP: Index finger quick extension and retraction (Click/Select raycast).
-6. CROSS_SECTION_SPLIT: Two hands moving apart horizontally (Cutaway / Internal view).
-7. FIST_LOCK: 0 extended fingers (Lock viewport).
-8. EMERGENCY_RESET: Dual closed fists (Instantly reset transform values).
-
-HUD & Keyboard Controls:
-  - Key 'H': Toggle Hand Skeleton lines ON/OFF.
-  - Key 'T': Toggle Telemetry Text Box ON/OFF.
-  - Key 'A': Toggle ALL Overlays ON/OFF (Clean Video View).
-  - Key 'M': Toggle Camera Mirroring.
-  - Key 'Q' / ESC: Quit.
+Streams rich JSON payloads over UDP Port 5053 to Unity.
 """
 
 import argparse
@@ -60,7 +50,7 @@ from gestures.essential_gestures import EssentialGestureRecognizer
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 DEFAULT_MODEL_FILENAME = "hand_landmarker.task"
 
-# Standard 21 MediaPipe Hand Landmark Topology
+# Standard 21 MediaPipe Hand Landmark Connections
 HAND_CONNECTIONS = [
     # Palm
     (0, 1), (1, 2), (2, 5), (5, 9), (9, 13), (13, 17), (17, 0), (0, 5),
@@ -78,7 +68,7 @@ HAND_CONNECTIONS = [
 
 
 def ensure_model_exists(target_dir: Optional[str] = None) -> str:
-    """Checks if hand_landmarker.task exists, auto-downloads from Google CDN if missing."""
+    """Checks if hand_landmarker.task exists, auto-downloads if missing."""
     if target_dir is None:
         target_dir = os.path.join(BASE_DIR, "models")
     os.makedirs(target_dir, exist_ok=True)
@@ -130,8 +120,8 @@ def put_outlined_text(
 
 class HoloMedGestureEngine:
     """
-    Main runner running the OpenCV camera loop, MediaPipe Tasks pipeline,
-    Essential 8 Gesture detection, high-contrast HUD, and UDP telemetry.
+    Main runner for camera capture, MediaPipe Tasks pipeline,
+    Pinch-Drag & Point-Measurement calculations, HUD, and UDP telemetry.
     """
 
     def __init__(
@@ -151,7 +141,7 @@ class HoloMedGestureEngine:
         self.rate_limit_hz = rate_limit_hz
         self.mirror = mirror
 
-        # Dedicated Keyboard Toggles
+        # Keyboard Toggles
         self.show_hands = show_hands            # Key 'H'
         self.show_telemetry = show_telemetry    # Key 'T'
         self.show_all = True                    # Key 'A' (Master Toggle)
@@ -175,7 +165,7 @@ class HoloMedGestureEngine:
         self.landmarker = vision.HandLandmarker.create_from_options(options)
 
         # 2. Gesture Recognizer & UDP Broadcaster
-        self.debouncer = GestureDebouncer(default_cooldown=0.20)
+        self.debouncer = GestureDebouncer(default_cooldown=0.15)
         self.broadcaster = UDPBroadcaster(host=self.udp_host, port=self.udp_port, rate_limit_hz=self.rate_limit_hz)
         self.recognizer = EssentialGestureRecognizer(debouncer=self.debouncer)
 
@@ -219,10 +209,10 @@ class HoloMedGestureEngine:
                 self.udp_packets_sent += 1
                 self.last_sent_timestamp = time.time()
                 self.recent_events.appendleft((time.time(), event))
-                print(f"[UDP -> Unity {self.udp_port}] Action: {event.action:<22} Conf: {event.confidence:.2f}")
+                print(f"[UDP -> Unity {self.udp_port}] Action: {event.action:<16} Params: {event.parameters}")
 
     def _draw_hand_skeleton(self, frame: cv2.Mat, landmarks: List[Any], handedness: str = "Right") -> None:
-        """Draws glowing joints and skeleton connection lines."""
+        """Draws glowing joints, skeleton connection lines, and spatial interaction reticles."""
         h, w, _ = frame.shape
         coords: List[Tuple[int, int]] = []
 
@@ -248,6 +238,22 @@ class HoloMedGestureEngine:
             else:
                 cv2.circle(frame, (cx, cy), 4, node_color, -1, cv2.LINE_AA)
 
+        # Spatial Interaction Visualizations (Pinch line & Point Measurement Reticle)
+        for ev in self.active_gestures_current_frame:
+            if ev.action == "DRAG" and len(coords) > 8:
+                # Draw pinch connecting laser
+                cv2.line(frame, coords[4], coords[8], (0, 255, 0), 3, cv2.LINE_AA)
+                cv2.circle(frame, coords[8], 14, (0, 255, 255), 2, cv2.LINE_AA)
+                put_outlined_text(frame, "PINCH DRAG", (coords[8][0] + 15, coords[8][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
+            elif ev.action == "POINT" and len(coords) > 8:
+                # Draw AI Caliper Measurement Reticle on index fingertip
+                ix, iy = coords[8]
+                cv2.drawMarker(frame, (ix, iy), (0, 240, 255), cv2.MARKER_CROSS, 24, 2, cv2.LINE_AA)
+                cv2.circle(frame, (ix, iy), 18, (0, 240, 255), 1, cv2.LINE_AA)
+                label = ev.parameters.get("measurement_label", "AI Caliper")
+                put_outlined_text(frame, f"[POINT] {label}", (ix + 20, iy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1)
+
         if coords:
             wx, wy = coords[0]
             label_text = f"[{handedness.upper()}]"
@@ -258,12 +264,12 @@ class HoloMedGestureEngine:
         h, w, _ = frame.shape
         overlay = frame.copy()
 
-        # 1. Top Status Banner (Solid dark box for contrast)
+        # 1. Top Status Banner
         cv2.rectangle(overlay, (0, 0), (w, 58), (10, 14, 22), -1)
         cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
         cv2.line(frame, (0, 58), (w, 58), (0, 180, 220), 1)
 
-        put_outlined_text(frame, "HOLOMED AI // ESSENTIAL 8 GESTURE ENGINE", (20, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 240, 255), 2, (0, 0, 0), 4)
+        put_outlined_text(frame, "HOLOMED AI // ADVANCED SPATIAL ENGINE", (20, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 240, 255), 2, (0, 0, 0), 4)
         put_outlined_text(frame, f"UDP: {self.udp_host}:{self.udp_port}  |  SKELETON [H]: {'ON' if self.show_hands else 'OFF'}  |  TELEMETRY [T]: {'ON' if self.show_telemetry else 'OFF'}", (20, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 230, 255), 1, (0, 0, 0), 3)
 
         fps_text = f"FPS: {self.fps:04.1f}"
@@ -275,35 +281,35 @@ class HoloMedGestureEngine:
         cv2.circle(frame, (w - 250, 32), 7, (0, 0, 0), -1)
         cv2.circle(frame, (w - 250, 32), 6, tx_color, -1)
 
-        # 2. Left Telemetry Box (Dark semi-transparent background card)
-        panel_w = 360
-        panel_h = min(h - 90, 380)
+        # 2. Left Telemetry Box
+        panel_w = 380
+        panel_h = min(h - 90, 390)
         panel_overlay = frame.copy()
         cv2.rectangle(panel_overlay, (15, 70), (15 + panel_w, 70 + panel_h), (8, 12, 18), -1)
         cv2.addWeighted(panel_overlay, 0.90, frame, 0.10, 0, frame)
 
         cv2.rectangle(frame, (15, 70), (15 + panel_w, 70 + panel_h), (0, 180, 220), 1)
-        put_outlined_text(frame, "ESSENTIAL 8 TELEMETRY STREAM", (25, 94), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 240, 255), 1, (0, 0, 0), 3)
+        put_outlined_text(frame, "SPATIAL INTERACTION STREAM", (25, 94), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 240, 255), 1, (0, 0, 0), 3)
         cv2.line(frame, (25, 104), (15 + panel_w - 10, 104), (0, 140, 180), 1)
 
         y_cursor = 130
         if self.active_gestures_current_frame:
-            put_outlined_text(frame, "ACTIVE TRIGGERED GESTURES:", (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (180, 210, 240), 1, (0, 0, 0), 3)
+            put_outlined_text(frame, "ACTIVE SPATIAL GESTURES:", (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (180, 210, 240), 1, (0, 0, 0), 3)
             y_cursor += 24
             for g in self.active_gestures_current_frame[:2]:
                 put_outlined_text(frame, f"{g.action}", (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 2, (0, 0, 0), 4)
                 y_cursor += 20
 
-                # Confidence meter bar
-                bar_x = 25
-                bar_w = 210
-                bar_h = 8
-                cv2.rectangle(frame, (bar_x - 1, y_cursor - 1), (bar_x + bar_w + 1, y_cursor + bar_h + 1), (0, 0, 0), -1)
-                cv2.rectangle(frame, (bar_x, y_cursor), (bar_x + bar_w, y_cursor + bar_h), (30, 40, 50), -1)
-                fill_w = int(bar_w * max(0.0, min(1.0, g.confidence)))
-                cv2.rectangle(frame, (bar_x, y_cursor), (bar_x + fill_w, y_cursor + bar_h), (0, 255, 180), -1)
-                put_outlined_text(frame, f"{int(g.confidence * 100)}%", (bar_x + bar_w + 10, y_cursor + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 180), 1, (0, 0, 0), 3)
-                y_cursor += 26
+                # Parameter details
+                if g.action == "DRAG":
+                    param_text = f"dx: {g.parameters.get('delta_x', 0):+.3f}, dy: {g.parameters.get('delta_y', 0):+.3f}"
+                    put_outlined_text(frame, param_text, (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 180), 1)
+                elif g.action == "POINT":
+                    param_text = f"Dist: {g.parameters.get('estimated_distance_mm', 0)} mm | Vol: {g.parameters.get('estimated_volume_ml', 0)} mL"
+                    put_outlined_text(frame, param_text, (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 240, 255), 1)
+                else:
+                    put_outlined_text(frame, f"Confidence: {int(g.confidence * 100)}%", (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 180), 1)
+                y_cursor += 24
         else:
             put_outlined_text(frame, "STATUS: TRACKING / IDLE", (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 160, 190), 1, (0, 0, 0), 3)
             y_cursor += 32
@@ -317,7 +323,7 @@ class HoloMedGestureEngine:
         for ts, ev in list(self.recent_events)[:5]:
             age = max(0.0, time.time() - ts)
             alpha_col = (200, 240, 255) if age < 1.0 else ((140, 180, 210) if age < 3.0 else (90, 120, 140))
-            log_line = f"- {ev.action[:18]:<18} ({ev.confidence:.2f}) {age:.1f}s"
+            log_line = f"- {ev.action[:16]:<16} ({ev.confidence:.2f}) {age:.1f}s"
             put_outlined_text(frame, log_line, (25, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.40, alpha_col, 1, (0, 0, 0), 3)
             y_cursor += 20
 
@@ -342,7 +348,7 @@ class HoloMedGestureEngine:
             print(f"[ERROR] Could not open camera device index {self.camera_index}.")
             return
 
-        window_name = "HoloMed AI - Essential 8 Gesture Engine (UDP 5053)"
+        window_name = "HoloMed AI - Phase 2 Spatial Engine (UDP 5053)"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_name, 1280, 720)
 
@@ -386,11 +392,11 @@ class HoloMedGestureEngine:
                         processed_hands.append((label, smoothed_pts))
                         self.active_gestures_current_frame.extend(single_events)
 
-                        # Draw hand skeleton (Toggled by 'H' & master 'A')
+                        # Draw hand skeleton & spatial interaction reticles
                         if self.show_all and self.show_hands:
                             self._draw_hand_skeleton(frame, raw_lms, handedness=label)
 
-                    # Bimanual processing (if 2 hands detected)
+                    # Bimanual processing
                     if len(processed_hands) >= 2:
                         multi_events = self._process_multi_hand(
                             processed_hands[0][1],
@@ -399,11 +405,11 @@ class HoloMedGestureEngine:
                         )
                         self.active_gestures_current_frame.extend(multi_events)
 
-                # Broadcast detected gesture events to Unity over UDP
+                # Broadcast detected events over UDP
                 if self.active_gestures_current_frame:
                     self._broadcast_events(self.active_gestures_current_frame)
 
-                # Render Telemetry Box (Toggled by 'T' & master 'A')
+                # Render Telemetry Box
                 if self.show_all and self.show_telemetry:
                     self._render_hud(frame, hand_count)
 
@@ -438,38 +444,17 @@ class HoloMedGestureEngine:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="HoloMed AI - Essential 8 Gesture Engine (MediaPipe Tasks + UDP 5053)")
+    parser = argparse.ArgumentParser(description="HoloMed AI - Phase 2 Spatial Interaction Engine (Tasks API + UDP 5053)")
     parser.add_argument("--camera", type=int, default=0, help="Camera device index (default: 0)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="UDP broadcast target IP (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=5053, help="UDP transmission port for Unity (default: 5053)")
     parser.add_argument("--rate-limit", type=float, default=60.0, help="Max UDP transmission rate in Hz (default: 60)")
     parser.add_argument("--model", type=str, default=None, help="Path to hand_landmarker.task model file")
     parser.add_argument("--no-mirror", action="store_true", help="Disable horizontal webcam flip")
-    parser.add_argument("--hide-hands", action="store_true", help="Start with hand skeleton drawing hidden")
+    parser.add_argument("--hide-hands", action="store_true", help="Start with hand skeleton hidden")
     parser.add_argument("--hide-telemetry", action="store_true", help="Start with telemetry box hidden")
 
     args = parser.parse_args()
-
-    banner = r"""
-================================================================================
-  HoloMed AI - Essential 8 Gesture Recognition Engine (Tasks API + UDP 5053)
-================================================================================
-  [Essential 8 Gestures]:
-    1. PINCH_DRAG             -> 3D Position Drag (delta_x, delta_y)
-    2. ROTATE_WRIST_CW / CCW  -> Clockwise / Counter-Clockwise Rotation
-    3. ZOOM_SPREAD / CLOSE    -> Radial Zoom In / Out
-    4. PALM_STOP              -> Freeze & Halt Movement
-    5. AIR_TAP                -> Button Click / Select Raycast
-    6. CROSS_SECTION_SPLIT    -> Toggle Internal Cutaway Mesh
-    7. FIST_LOCK              -> Lock Viewport State
-    8. EMERGENCY_RESET        -> Reset Position, Rotation, and Scale
-  [Controls]:
-    'H' -> Toggle Hand Skeleton | 'T' -> Toggle Telemetry Box
-    'A' -> Toggle All Overlays (Clean Feed) | 'M' -> Mirror | 'Q' -> Quit
-================================================================================
-"""
-    print(banner)
-
     engine = HoloMedGestureEngine(
         camera_index=args.camera,
         udp_host=args.host,
