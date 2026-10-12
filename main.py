@@ -11,8 +11,11 @@ import sys
 import threading
 import time
 
-# Ensure project root is in sys.path
+# Ensure project root and python package root are in sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PYTHON_DIR = os.path.join(BASE_DIR, "python")
+if PYTHON_DIR not in sys.path:
+    sys.path.insert(0, PYTHON_DIR)
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
@@ -20,6 +23,8 @@ from backend.ai_orchestrator import UltronAIOrchestrator, run_interactive_cli
 from backend.hand_tracker import HoloMedHandTracker
 from backend.hardware_bridge import HoloMedHardwareBridge
 from backend.test_integration import run_test
+from holomed.input.voice import VoiceListener
+from holomed.intelligence.ultron import UltronBrain
 
 
 def print_banner():
@@ -45,14 +50,17 @@ def launch_full_suite(camera_index: int = 0, udp_port: int = 5052):
     print("\n[HoloMed AI] Launching Full Integrated Holographic Suite...")
 
     # 1. Start Hardware Bridge in background thread
-    print("[1/3] Initializing ESP32 Hardware Bridge...")
+    print("[1/4] Initializing ESP32 Hardware Bridge...")
     bridge = HoloMedHardwareBridge(udp_port=udp_port, simulation_mode=False)
     bridge_thread = threading.Thread(target=bridge.start, daemon=True, name="HardwareBridgeThread")
     bridge_thread.start()
 
-    # 2. Start AI Orchestrator
-    print("[2/3] Initializing Ultron AI Command Orchestrator...")
+    # 2. Start AI Orchestrator & Voice Pipeline in background thread
+    print("[2/4] Initializing Ultron AI Command Orchestrator & VoiceListener...")
     orchestrator = UltronAIOrchestrator(udp_port=udp_port)
+    ultron_brain = UltronBrain(udp_port=udp_port)
+    voice_listener = VoiceListener(on_speech_detected=ultron_brain.process_and_dispatch)
+    voice_listener.start_listening()
 
     # Run quick diagnostics self-test
     test_queries = [
@@ -67,12 +75,13 @@ def launch_full_suite(camera_index: int = 0, udp_port: int = 5052):
         time.sleep(0.05)
 
     # 3. Start Hand Tracker Vision HUD (Runs on Main Thread for OpenCV GUI window)
-    print("\n[3/3] Launching MediaPipe Neural Vision HUD Window...")
+    print("\n[3/4] Launching MediaPipe Neural Vision HUD Window...")
     print("--------------------------------------------------------------------------------")
     print("Controls: In the Vision Window:")
     print("  'Q' - Exit application")
     print("  'H' - Toggle Hologram Presentation HUD Overlay")
     print("  'R' - Send Instant Reset Command to Unity")
+    print("Voice: Speak medical commands ('Show me the heart', 'Rotate', 'Cut open').")
     print("--------------------------------------------------------------------------------")
     
     tracker = HoloMedHandTracker(udp_port=udp_port, camera_index=camera_index)
@@ -82,14 +91,16 @@ def launch_full_suite(camera_index: int = 0, udp_port: int = 5052):
     except KeyboardInterrupt:
         print("\n[HoloMed AI] Terminating session...")
     finally:
+        voice_listener.stop_listening()
+        ultron_brain.close()
         bridge.stop()
         print("[HoloMed AI] All modules stopped cleanly. Goodbye.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="HoloMed AI - Next-Gen Holographic Medical AI Suite")
-    parser.add_argument("--mode", choices=["all", "vision", "ai", "hardware", "test"], default="all",
-                        help="Execution mode: all (Full Suite), vision (Hand Tracker), ai (Orchestrator CLI), hardware (Bridge), test (Integration Test)")
+    parser.add_argument("--mode", choices=["all", "vision", "voice", "ai", "hardware", "test"], default="all",
+                        help="Execution mode: all (Full Suite), vision (Hand Tracker), voice (Microphone Listener), ai (Orchestrator CLI), hardware (Bridge), test (Integration Test)")
     parser.add_argument("--camera", type=int, default=0, help="Camera device index (default: 0)")
     parser.add_argument("--port", type=int, default=5052, help="UDP transmission port for Unity 3D (default: 5052)")
     
@@ -102,6 +113,19 @@ def main():
         print("[HoloMed AI] Launching Hand Tracker Vision HUD...")
         tracker = HoloMedHandTracker(udp_port=args.port, camera_index=args.camera)
         tracker.run()
+    elif args.mode == "voice":
+        print("[HoloMed AI] Launching VoiceListener & UltronBrain (Port %d)..." % args.port)
+        brain = UltronBrain(udp_port=args.port)
+        listener = VoiceListener(on_speech_detected=brain.process_and_dispatch)
+        listener.start_listening()
+        print("[HoloMed AI] Real-time voice listening active. Speak medical commands (Press Ctrl+C to exit)...")
+        try:
+            while True:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            listener.stop_listening()
+            brain.close()
+            print("\n[HoloMed AI] Voice listener stopped.")
     elif args.mode == "ai":
         print("[HoloMed AI] Launching Ultron Medical NLP CLI...")
         run_interactive_cli()
