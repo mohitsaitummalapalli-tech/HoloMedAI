@@ -35,6 +35,20 @@ namespace HoloMedAI.Gestures
         [Range(0.1f, 1.0f)]
         [SerializeField] private float minimumConfidence = 0.75f;
 
+        [Header("Interaction Calibration")]
+        [Tooltip("Pan / Translation speed multiplier.")]
+        [SerializeField] private float moveSpeed = 1.0f;
+
+        [Tooltip("Zoom / Scale speed multiplier.")]
+        [SerializeField] private float zoomSpeed = 1.0f;
+
+        [Tooltip("Rotation speed multiplier.")]
+        [SerializeField] private float rotationSpeed = 1.0f;
+
+        [Tooltip("Scale limits")]
+        [SerializeField] private float minScale = 0.1f;
+        [SerializeField] private float maxScale = 5.0f;
+
         [Header("Logging & Diagnostics")]
         [Tooltip("Configure verbosity level for console diagnostics")]
         [SerializeField] private GestureLogLevel logLevel = GestureLogLevel.INFO;
@@ -256,21 +270,117 @@ namespace HoloMedAI.Gestures
                     return;
                 }
 
-                // Handle sys.input.interact on GameObject named exactly "Heart"
-                if (parsedCommand.command.Equals("sys.input.interact", StringComparison.OrdinalIgnoreCase) ||
-                    parsedCommand.command.Equals("INTERACT", StringComparison.OrdinalIgnoreCase))
+                string cmd = parsedCommand.command.Trim();
+
+                // 1. ROTATION (sys.input.interact, ROTATE, PINCH_DRAG, DRAG)
+                if (cmd.Equals("sys.input.interact", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("INTERACT", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("ROTATE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("ROTATE_MODEL", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PINCH_DRAG", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("DRAG", StringComparison.OrdinalIgnoreCase))
                 {
                     float dx = parsedCommand.payload != null && parsedCommand.payload.dx != 0f ? parsedCommand.payload.dx : parsedCommand.dx;
                     float dy = parsedCommand.payload != null && parsedCommand.payload.dy != 0f ? parsedCommand.payload.dy : parsedCommand.dy;
-                    GameObject heartObj = GameObject.Find("Heart");
-                    if (heartObj != null)
+                    if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
                     {
-                        Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
-                        float speed = 1.0f;
-                        heartObj.transform.Rotate(Vector3.up, -dx * speed, Space.World);
-                        heartObj.transform.Rotate(Vector3.right, dy * speed, Space.World);
-                        return;
+                        ExtractDeltas(trimmed, out dx, out dy);
                     }
+
+                    _executionQueue.Enqueue(() =>
+                    {
+                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                        if (target != null)
+                        {
+                            Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+                            target.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                            target.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                        }
+                    });
+                    return;
+                }
+
+                // 2. ZOOM (Scaling)
+                if (cmd.Equals("ZOOM", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("TWO-HAND ZOOM", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("TWO_HAND_ZOOM", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("ZOOM_MODEL", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SCALE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("ZOOM_SPREAD", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("ZOOM_CLOSE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("TWO_HAND_SCALE_UP", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("TWO_HAND_SCALE_DOWN", StringComparison.OrdinalIgnoreCase))
+                {
+                    float delta = 0f;
+                    if (parsedCommand.payload != null)
+                    {
+                        if (parsedCommand.payload.dz != 0f) delta = parsedCommand.payload.dz;
+                        else if (parsedCommand.payload.scale != 0f) delta = parsedCommand.payload.scale;
+                        else if (parsedCommand.payload.delta != 0f) delta = parsedCommand.payload.delta;
+                        else if (parsedCommand.payload.distanceDelta != 0f) delta = parsedCommand.payload.distanceDelta;
+                        else if (parsedCommand.payload.value != 0f) delta = parsedCommand.payload.value;
+                        else if (parsedCommand.payload.zoomFactor > 0f) delta = (parsedCommand.payload.zoomFactor - 1.0f) * 0.1f;
+                    }
+                    if (Mathf.Approximately(delta, 0f))
+                    {
+                        if (parsedCommand.dz != 0f) delta = parsedCommand.dz;
+                        else if (parsedCommand.scale != 0f) delta = parsedCommand.scale;
+                        else if (parsedCommand.delta != 0f) delta = parsedCommand.delta;
+                        else if (parsedCommand.distanceDelta != 0f) delta = parsedCommand.distanceDelta;
+                        else if (parsedCommand.value != 0f) delta = parsedCommand.value;
+                    }
+
+                    if (Mathf.Approximately(delta, 0f))
+                    {
+                        ExtractZoomDelta(trimmed, out delta);
+                    }
+
+                    if (cmd.Equals("ZOOM_SPREAD", StringComparison.OrdinalIgnoreCase) || cmd.Equals("TWO_HAND_SCALE_UP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (Mathf.Approximately(delta, 0f)) delta = 0.05f;
+                    }
+                    else if (cmd.Equals("ZOOM_CLOSE", StringComparison.OrdinalIgnoreCase) || cmd.Equals("TWO_HAND_SCALE_DOWN", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (Mathf.Approximately(delta, 0f)) delta = -0.05f;
+                    }
+
+                    _executionQueue.Enqueue(() =>
+                    {
+                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                        if (target != null)
+                        {
+                            Debug.Log($"[HoloMed] Zooming Heart delta:{delta}");
+                            Vector3 newScale = target.localScale + (Vector3.one * delta * zoomSpeed);
+                            target.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+                        }
+                    });
+                    return;
+                }
+
+                // 3. MOVE (Translation/Pan)
+                if (cmd.Equals("MOVE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PAN", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("TRANSLATE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("MOVE_MODEL", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("sys.input.move", StringComparison.OrdinalIgnoreCase))
+                {
+                    float dx = parsedCommand.payload != null && parsedCommand.payload.dx != 0f ? parsedCommand.payload.dx : parsedCommand.dx;
+                    float dy = parsedCommand.payload != null && parsedCommand.payload.dy != 0f ? parsedCommand.payload.dy : parsedCommand.dy;
+                    if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
+                    {
+                        ExtractDeltas(trimmed, out dx, out dy);
+                    }
+
+                    _executionQueue.Enqueue(() =>
+                    {
+                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                        if (target != null)
+                        {
+                            Debug.Log($"[HoloMed] Moving Heart dx:{dx} dy:{dy}");
+                            target.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
+                        }
+                    });
+                    return;
                 }
 
                 commandRouter.RouteCommand(parsedCommand);
@@ -279,6 +389,63 @@ namespace HoloMedAI.Gestures
             {
                 Log(GestureLogLevel.ERROR, $"JSON Deserialization exception: {ex.Message} | Payload: {trimmed}");
             }
+        }
+
+        private void ExtractDeltas(string json, out float dx, out float dy)
+        {
+            dx = 0f;
+            dy = 0f;
+            try
+            {
+                int idxX = json.IndexOf("\"dx\":", StringComparison.OrdinalIgnoreCase);
+                if (idxX >= 0)
+                {
+                    int start = idxX + 5;
+                    int end = json.IndexOfAny(new char[] { ',', '}', ' ' }, start);
+                    if (end > start)
+                    {
+                        float.TryParse(json.Substring(start, end - start).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out dx);
+                    }
+                }
+
+                int idxY = json.IndexOf("\"dy\":", StringComparison.OrdinalIgnoreCase);
+                if (idxY >= 0)
+                {
+                    int start = idxY + 5;
+                    int end = json.IndexOfAny(new char[] { ',', '}', ' ' }, start);
+                    if (end > start)
+                    {
+                        float.TryParse(json.Substring(start, end - start).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out dy);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void ExtractZoomDelta(string json, out float delta)
+        {
+            delta = 0f;
+            try
+            {
+                string[] keys = new string[] { "\"dz\":", "\"scale\":", "\"delta\":", "\"value\":", "\"dist_delta\":", "\"distanceDelta\":" };
+                foreach (string key in keys)
+                {
+                    int idx = json.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0)
+                    {
+                        int start = idx + key.Length;
+                        int end = json.IndexOfAny(new char[] { ',', '}', ' ' }, start);
+                        if (end > start)
+                        {
+                            if (float.TryParse(json.Substring(start, end - start).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out delta))
+                            {
+                                if (!Mathf.Approximately(delta, 0f)) return;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         private void StopUDPListener()

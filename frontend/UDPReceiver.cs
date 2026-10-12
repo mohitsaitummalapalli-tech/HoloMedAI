@@ -16,8 +16,12 @@ public class UDPReceiver : MonoBehaviour
     [Tooltip("UDP Port matching Python vision HUD (default: 5052)")]
     public int port = 5052;
 
-    [Header("Rotation Calibration")]
+    [Header("Motion Calibration")]
     [SerializeField] private float rotationSpeed = 1.0f;
+    [SerializeField] private float zoomSpeed = 1.0f;
+    [SerializeField] private float moveSpeed = 1.0f;
+    [SerializeField] private float minScale = 0.1f;
+    [SerializeField] private float maxScale = 5.0f;
 
     [Header("Debug")]
     public bool logIncomingPackets = false;
@@ -40,6 +44,10 @@ public class UDPReceiver : MonoBehaviour
         public string state;
         public float dx;
         public float dy;
+        public float dz;
+        public float scale;
+        public float delta;
+        public float value;
     }
 
     void Start()
@@ -162,6 +170,49 @@ public class UDPReceiver : MonoBehaviour
                     heart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
                 }
             }
+            else if (actionType.Equals("ZOOM", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("TWO-HAND ZOOM", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("TWO_HAND_ZOOM", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("SCALE", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("ZOOM_SPREAD", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("ZOOM_CLOSE", StringComparison.OrdinalIgnoreCase))
+            {
+                float delta = payload.dz != 0f ? payload.dz : (payload.scale != 0f ? payload.scale : (payload.delta != 0f ? payload.delta : payload.value));
+                if (Mathf.Approximately(delta, 0f))
+                {
+                    ExtractZoomDelta(trimmed, out delta);
+                }
+
+                if (actionType.Equals("ZOOM_SPREAD", StringComparison.OrdinalIgnoreCase) && Mathf.Approximately(delta, 0f)) delta = 0.05f;
+                else if (actionType.Equals("ZOOM_CLOSE", StringComparison.OrdinalIgnoreCase) && Mathf.Approximately(delta, 0f)) delta = -0.05f;
+
+                GameObject heart = GameObject.Find("Heart");
+                if (heart != null)
+                {
+                    Debug.Log($"[HoloMed] Zooming Heart delta:{delta}");
+                    Vector3 newScale = heart.transform.localScale + (Vector3.one * delta * zoomSpeed);
+                    heart.transform.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+                }
+            }
+            else if (actionType.Equals("MOVE", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("PAN", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("TRANSLATE", StringComparison.OrdinalIgnoreCase) ||
+                     actionType.Equals("sys.input.move", StringComparison.OrdinalIgnoreCase))
+            {
+                float dx = payload.dx;
+                float dy = payload.dy;
+                if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
+                {
+                    ExtractDeltas(trimmed, out dx, out dy);
+                }
+
+                GameObject heart = GameObject.Find("Heart");
+                if (heart != null)
+                {
+                    Debug.Log($"[HoloMed] Moving Heart dx:{dx} dy:{dy}");
+                    heart.transform.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
+                }
+            }
         }
         catch { }
     }
@@ -191,6 +242,32 @@ public class UDPReceiver : MonoBehaviour
                 if (end > start)
                 {
                     float.TryParse(json.Substring(start, end - start).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out dy);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private void ExtractZoomDelta(string json, out float delta)
+    {
+        delta = 0f;
+        try
+        {
+            string[] keys = new string[] { "\"dz\":", "\"scale\":", "\"delta\":", "\"value\":" };
+            foreach (var key in keys)
+            {
+                int idx = json.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    int start = idx + key.Length;
+                    int end = json.IndexOfAny(new char[] { ',', '}', ' ' }, start);
+                    if (end > start)
+                    {
+                        if (float.TryParse(json.Substring(start, end - start).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out delta))
+                        {
+                            return;
+                        }
+                    }
                 }
             }
         }

@@ -17,6 +17,8 @@ namespace HoloMedAI.Gestures
         public float distanceDelta;
         public float zoomFactor;
         public float delta;
+        public float dz;
+        public float scale;
         public string direction;
         public float magnitude;
         public string state;
@@ -38,6 +40,10 @@ namespace HoloMedAI.Gestures
         public string structure;
         public float dx;
         public float dy;
+        public float dz;
+        public float scale;
+        public float delta;
+        public float value;
         public float distanceDelta;
         public string direction;
         public float magnitude;

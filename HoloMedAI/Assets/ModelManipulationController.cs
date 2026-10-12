@@ -67,6 +67,10 @@ namespace HoloMedAI.Gestures
         [Tooltip("Maximum allowed zoom delta before clamping malformed packets")]
         [SerializeField] private float maxZoomDeltaPerPacket = 0.5f;
 
+        [Header("Movement / Translation Settings")]
+        [Tooltip("Translation sensitivity multiplier for hand move / pan")]
+        [SerializeField] private float moveSpeed = 1.0f;
+
         // Baseline Reference Coordinates
         private Vector3 initialPosition;
         private Quaternion initialRotation;
@@ -205,12 +209,21 @@ namespace HoloMedAI.Gestures
             // 2. Apply Dead-Zone threshold
             if (Mathf.Abs(distanceDelta) < zoomDeadZone) return;
 
-            // 3. Compute relative scale delta and clamp within safe limits
-            float scaleAdjustment = distanceDelta * zoomSensitivity;
-            float currentScale = targetModel.localScale.x;
-            float newScale = Mathf.Clamp(currentScale + scaleAdjustment, minScale, maxScale);
+            // 3. Compute relative scale delta and clamp within safe limits (Vector3.Max/Min)
+            Vector3 newScale = targetModel.localScale + (Vector3.one * distanceDelta * zoomSensitivity);
+            targetModel.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+        }
 
-            targetModel.localScale = new Vector3(newScale, newScale, newScale);
+        /// <summary>
+        /// Applies direct translation (Move/Pan) to targetModel based on user hand movement delta.
+        /// </summary>
+        public void MoveModel(float dx, float dy)
+        {
+            if (targetModel == null) return;
+            if (float.IsNaN(dx) || float.IsInfinity(dx)) dx = 0f;
+            if (float.IsNaN(dy) || float.IsInfinity(dy)) dy = 0f;
+
+            targetModel.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
         }
 
         /// <summary>

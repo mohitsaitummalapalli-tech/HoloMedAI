@@ -164,6 +164,8 @@ namespace HoloMedAI.Gestures
                 // -------------------------------------------------------------
                 case "ZOOM_MODEL":
                 case "ZOOM":
+                case "TWO-HAND ZOOM":
+                case "TWO_HAND_ZOOM":
                 case "SCALE":
                 case "ZOOM_SPREAD":
                 case "ZOOM_CLOSE":
@@ -173,19 +175,41 @@ namespace HoloMedAI.Gestures
                     float distanceDelta = 0f;
                     if (command.payload != null)
                     {
-                        if (command.payload.distanceDelta != 0f) distanceDelta = command.payload.distanceDelta;
+                        if (command.payload.dz != 0f) distanceDelta = command.payload.dz;
+                        else if (command.payload.scale != 0f) distanceDelta = command.payload.scale;
+                        else if (command.payload.distanceDelta != 0f) distanceDelta = command.payload.distanceDelta;
                         else if (command.payload.delta != 0f) distanceDelta = command.payload.delta;
+                        else if (command.payload.value != 0f) distanceDelta = command.payload.value;
                         else if (command.payload.zoomFactor > 0f) distanceDelta = (command.payload.zoomFactor - 1.0f) * 0.1f;
                     }
-                    else
+                    if (Mathf.Approximately(distanceDelta, 0f))
                     {
-                        distanceDelta = command.distanceDelta;
+                        if (command.dz != 0f) distanceDelta = command.dz;
+                        else if (command.scale != 0f) distanceDelta = command.scale;
+                        else if (command.delta != 0f) distanceDelta = command.delta;
+                        else if (command.distanceDelta != 0f) distanceDelta = command.distanceDelta;
+                        else if (command.value != 0f) distanceDelta = command.value;
                     }
 
                     if (cmdType == "ZOOM_SPREAD" || cmdType == "TWO_HAND_SCALE_UP") distanceDelta = 0.04f;
                     else if (cmdType == "ZOOM_CLOSE" || cmdType == "TWO_HAND_SCALE_DOWN") distanceDelta = -0.04f;
 
                     manipulationController?.ZoomModel(distanceDelta);
+                    break;
+                }
+
+                // -------------------------------------------------------------
+                // 4.5. MOVE_MODEL / PAN / TRANSLATION
+                // -------------------------------------------------------------
+                case "MOVE":
+                case "PAN":
+                case "TRANSLATE":
+                case "MOVE_MODEL":
+                case "SYS.INPUT.MOVE":
+                {
+                    float dx = command.payload != null && command.payload.dx != 0f ? command.payload.dx : command.dx;
+                    float dy = command.payload != null && command.payload.dy != 0f ? command.payload.dy : command.dy;
+                    manipulationController?.MoveModel(dx, dy);
                     break;
                 }
 

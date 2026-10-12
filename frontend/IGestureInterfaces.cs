@@ -13,6 +13,7 @@ namespace HoloMedAI.Gestures
     {
         void RotateModel(float dx, float dy);
         void ZoomModel(float distanceDelta);
+        void MoveModel(float dx, float dy);
         void StopRotation();
         void ResetTransform();
     }

@@ -54,6 +54,10 @@ namespace HoloMedAI.Gestures
         [Tooltip("Maximum allowed zoom delta before clamping malformed packets")]
         [SerializeField] private float maxZoomDeltaPerPacket = 0.5f;
 
+        [Header("Movement / Translation Settings")]
+        [Tooltip("Translation sensitivity multiplier for hand move / pan")]
+        [SerializeField] private float moveSpeed = 1.0f;
+
         private Vector3 initialPosition;
         private Quaternion initialRotation;
         private Vector3 initialScale;
@@ -171,11 +175,17 @@ namespace HoloMedAI.Gestures
 
             if (Mathf.Abs(distanceDelta) < zoomDeadZone) return;
 
-            float scaleAdjustment = distanceDelta * zoomSensitivity;
-            float currentScale = targetModel.localScale.x;
-            float newScale = Mathf.Clamp(currentScale + scaleAdjustment, minScale, maxScale);
+            Vector3 newScale = targetModel.localScale + (Vector3.one * distanceDelta * zoomSensitivity);
+            targetModel.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+        }
 
-            targetModel.localScale = new Vector3(newScale, newScale, newScale);
+        public void MoveModel(float dx, float dy)
+        {
+            if (targetModel == null) return;
+            if (float.IsNaN(dx) || float.IsInfinity(dx)) dx = 0f;
+            if (float.IsNaN(dy) || float.IsInfinity(dy)) dy = 0f;
+
+            targetModel.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
         }
 
         public void StopRotation()
