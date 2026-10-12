@@ -68,6 +68,9 @@ namespace HoloMedAI.Gestures
     public class CoreGestureCommand
     {
         public string command;
+        public string action;
+        public string state;
+        public string target;
         public float confidence = 1.0f;
         public long timestamp = 0;
         public GestureCommandPayload payload;

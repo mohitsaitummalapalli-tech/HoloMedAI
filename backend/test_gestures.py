@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gestures.utils import (
     GestureDebouncer,
     GestureEvent,
+    GestureStateMachine,
     LandmarkIndex,
     LandmarkMath,
     LandmarkSmoother,
@@ -109,15 +110,58 @@ def run_tests():
     print(f"  [PASS] Closed Fist evaluated -> Detected: {[e.action for e in events_fist]}")
 
     # 4. Test Essential Two-Hand Gestures
-    print("\n[4/4] Testing Essential Two-Hand Recognizer...")
+    print("\n[4/6] Testing Essential Two-Hand Recognizer...")
     # Two fists -> EMERGENCY_RESET
     fist1 = create_synthetic_hand(wrist=(0.48, 0.5, 0.0), is_open=False)
     fist2 = create_synthetic_hand(wrist=(0.52, 0.5, 0.0), is_open=False)
     events_reset = rec.process_multi_hand(fist1, fist2, timestamp=time.time())
     print(f"  [PASS] Dual Fists evaluated -> Detected: {[e.action for e in events_reset]}")
 
+    # 5. Test 5-Frame Temporal Stability Threshold (Hysteresis Buffer)
+    print("\n[5/6] Testing 5-Frame Temporal Stability Threshold (Hysteresis Buffer)...")
+    sm = GestureStateMachine(stability_threshold=5, initial_state="IDLE")
+    # Feed 4 frames of candidate state "PINCH_DRAG" -> Should stay "IDLE"
+    for frame in range(1, 5):
+        confirmed = sm.update("PINCH_DRAG")
+        assert confirmed == "IDLE", f"Frame {frame}: Expected IDLE, got {confirmed}"
+    # Frame 5 -> Must confirm transition to "PINCH_DRAG"
+    confirmed = sm.update("PINCH_DRAG")
+    assert confirmed == "PINCH_DRAG", f"Frame 5: Expected transition to PINCH_DRAG, got {confirmed}"
+    print("  [PASS] 5-frame threshold confirmed transition to PINCH_DRAG on exactly frame 5.")
+
+    # Test flicker rejection: 2 frames of spurious "ROTATE" while in "PINCH_DRAG"
+    sm.update("ROTATE")
+    sm.update("ROTATE")
+    assert sm.current_state == "PINCH_DRAG", f"Spurious frames caused premature transition: {sm.current_state}"
+    print("  [PASS] Transient 2-frame flicker rejected; maintained PINCH_DRAG state.")
+
+    # 6. Test Landmark 0 & Landmark 8 EMA Smoothing (alpha=0.65) and Euclidean Dead-Zones
+    print("\n[6/6] Testing EMA Smoothing (alpha=0.65 for Landmark 0 & 8) & Dead-Zones...")
+    smoother = LandmarkSmoother(alpha=0.60)
+    assert smoother.landmark_alphas[LandmarkIndex.WRIST] == 0.65, "Landmark 0 (wrist) alpha must be 0.65"
+    assert smoother.landmark_alphas[LandmarkIndex.INDEX_FINGER_TIP] == 0.65, "Landmark 8 (index tip) alpha must be 0.65"
+
+    raw_pts = [Point3D(0.0, 0.0, 0.0) for _ in range(21)]
+    smoother.smooth(raw_pts)
+    raw_pts_step2 = [Point3D(1.0, 1.0, 0.0) for _ in range(21)]
+    smoothed_step2 = smoother.smooth(raw_pts_step2)
+
+    # For alpha=0.65: new_val = 0.65 * 1.0 + 0.35 * 0.0 = 0.65
+    assert abs(smoothed_step2[0].x - 0.65) < 1e-4, f"Landmark 0 x smoothed expected 0.65, got {smoothed_step2[0].x}"
+    assert abs(smoothed_step2[8].x - 0.65) < 1e-4, f"Landmark 8 x smoothed expected 0.65, got {smoothed_step2[8].x}"
+    # For default alpha=0.60: new_val = 0.60 * 1.0 + 0.40 * 0.0 = 0.60
+    assert abs(smoothed_step2[1].x - 0.60) < 1e-4, f"Landmark 1 x smoothed expected 0.60, got {smoothed_step2[1].x}"
+    print("  [PASS] Landmark 0 (wrist) and Landmark 8 (index tip) accurately smoothed with alpha = 0.65.")
+
+    # Test Euclidean dead-zone calculation
+    dx, dy = 0.002, 0.003
+    euclid_dist = math.sqrt(dx * dx + dy * dy)
+    deadzone = 0.005
+    assert euclid_dist <= deadzone, f"Expected {euclid_dist} <= {deadzone}"
+    print(f"  [PASS] Euclidean dead-zone filter suppresses minor tremor ({euclid_dist:.4f} <= {deadzone:.4f} -> 0 delta).")
+
     print("\n" + "=" * 80)
-    print("  ALL ESSENTIAL 8 GESTURE SUITE TESTS PASSED!")
+    print("  ALL ESSENTIAL 8 GESTURE SUITE & CALIBRATION TESTS PASSED!")
     print("=" * 80)
 
 

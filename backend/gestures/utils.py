@@ -208,8 +208,21 @@ class LandmarkMath:
 class LandmarkSmoother:
     """Exponential Moving Average (EMA) smoother for jitter reduction."""
 
-    def __init__(self, alpha: float = 0.5):
+    def __init__(
+        self,
+        alpha: float = 0.60,
+        landmark_alphas: Optional[Dict[int, float]] = None,
+    ):
         self.alpha = alpha
+        # Specifically enforce alpha = 0.65 for Landmark 0 (wrist) and Landmark 8 (index tip)
+        self.landmark_alphas: Dict[int, float] = (
+            landmark_alphas
+            if landmark_alphas is not None
+            else {
+                LandmarkIndex.WRIST: 0.65,             # Landmark 0: Wrist
+                LandmarkIndex.INDEX_FINGER_TIP: 0.65,  # Landmark 8: Index Tip
+            }
+        )
         self.smoothed_landmarks: Optional[List[Point3D]] = None
 
     def smooth(self, raw_landmarks: List[Any]) -> List[Point3D]:
@@ -219,10 +232,12 @@ class LandmarkSmoother:
             return self.smoothed_landmarks
 
         smoothed = []
-        for curr, prev in zip(current_pts, self.smoothed_landmarks):
-            sx = self.alpha * curr.x + (1.0 - self.alpha) * prev.x
-            sy = self.alpha * curr.y + (1.0 - self.alpha) * prev.y
-            sz = self.alpha * curr.z + (1.0 - self.alpha) * prev.z
+        for idx, (curr, prev) in enumerate(zip(current_pts, self.smoothed_landmarks)):
+            # Enforce landmark-specific alpha (e.g. 0.65 for wrist/index tip), else default alpha
+            a = self.landmark_alphas.get(idx, self.alpha)
+            sx = a * curr.x + (1.0 - a) * prev.x
+            sy = a * curr.y + (1.0 - a) * prev.y
+            sz = a * curr.z + (1.0 - a) * prev.z
             smoothed.append(Point3D(sx, sy, sz))
         self.smoothed_landmarks = smoothed
         return self.smoothed_landmarks
@@ -313,7 +328,7 @@ class GestureDebouncer:
         confidence: float,
         min_confidence: float = 0.7,
         cooldown: Optional[float] = None,
-        min_frames: int = 2,
+        min_frames: int = 5,
     ) -> bool:
         """Returns True if gesture meets confidence, frame persistence, and cooldown."""
         if confidence < min_confidence:
@@ -328,6 +343,52 @@ class GestureDebouncer:
             self.trigger(action)
             return True
         return False
+
+
+class GestureStateMachine:
+    """
+    Temporal Hysteresis Gesture State Machine.
+    Enforces a minimum 5-frame temporal stability threshold before confirming
+    any gesture transition (e.g. between PINCH_DRAG, ROTATE, and ZOOM).
+    Eliminates tracking flicker, transitional jitter, and erratic mode switching.
+    """
+
+    def __init__(self, stability_threshold: int = 5, initial_state: str = "IDLE"):
+        self.stability_threshold = stability_threshold
+        self.current_state: str = initial_state
+        self.candidate_state: str = initial_state
+        self.candidate_frame_count: int = 0
+        self.transition_history: deque = deque(maxlen=20)
+
+    def update(self, detected_state: str) -> str:
+        """
+        Receives the raw candidate gesture detected in the current frame.
+        Transitions current_state to candidate_state only after candidate_state
+        persists for at least stability_threshold consecutive frames.
+        Returns the confirmed active gesture state.
+        """
+        if detected_state == self.current_state:
+            self.candidate_state = detected_state
+            self.candidate_frame_count = 0
+            return self.current_state
+
+        if detected_state == self.candidate_state:
+            self.candidate_frame_count += 1
+            if self.candidate_frame_count >= self.stability_threshold:
+                prev = self.current_state
+                self.current_state = self.candidate_state
+                self.candidate_frame_count = 0
+                self.transition_history.append((time.time(), prev, self.current_state))
+        else:
+            self.candidate_state = detected_state
+            self.candidate_frame_count = 1
+
+        return self.current_state
+
+    def reset(self, state: str = "IDLE"):
+        self.current_state = state
+        self.candidate_state = state
+        self.candidate_frame_count = 0
 
 
 class UDPBroadcaster:

@@ -170,8 +170,8 @@ class HoloMedGestureEngine:
         self.recognizer = EssentialGestureRecognizer(debouncer=self.debouncer)
 
         self.smoothers = {
-            "Right": LandmarkSmoother(alpha=0.60),
-            "Left": LandmarkSmoother(alpha=0.60),
+            "Right": LandmarkSmoother(alpha=0.60, landmark_alphas={LandmarkIndex.WRIST: 0.65, LandmarkIndex.INDEX_FINGER_TIP: 0.65}),
+            "Left": LandmarkSmoother(alpha=0.60, landmark_alphas={LandmarkIndex.WRIST: 0.65, LandmarkIndex.INDEX_FINGER_TIP: 0.65}),
         }
 
         # 3. State & Telemetry Metrics

@@ -143,7 +143,15 @@ namespace HoloMedAI.Gestures
             dx = Mathf.Clamp(dx, -maxRotationDeltaPerPacket, maxRotationDeltaPerPacket);
             dy = Mathf.Clamp(dy, -maxRotationDeltaPerPacket, maxRotationDeltaPerPacket);
 
-            // 2. Apply Dead-Zone threshold (ignore camera/tracking noise)
+            // 2. Apply Euclidean Dead-Zone threshold (suppresses minor hand tremor at rest with zero delta)
+            float euclideanDist = Mathf.Sqrt(dx * dx + dy * dy);
+            if (euclideanDist < rotationDeadZone)
+            {
+                currentFilteredDx = 0f;
+                currentFilteredDy = 0f;
+                return;
+            }
+
             if (Mathf.Abs(dx) < rotationDeadZone) dx = 0f;
             if (Mathf.Abs(dy) < rotationDeadZone) dy = 0f;
 

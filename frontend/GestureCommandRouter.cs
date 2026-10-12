@@ -103,6 +103,11 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                case "SYS.INPUT.INTERACT":
+                case "SYS.INPUT.ROTATE":
+                case "INTERACT":
+                case "DRAG":
+                case "PINCH_DRAG":
                 case "ROTATE_MODEL":
                 case "ROTATE":
                 case "SPIN":
@@ -111,13 +116,23 @@ namespace HoloMedAI.Gestures
                 case "TWO_HAND_ROTATE_CW":
                 case "TWO_HAND_ROTATE_CCW":
                 {
-                    float dx = command.payload != null ? command.payload.dx : command.dx;
-                    float dy = command.payload != null ? command.payload.dy : command.dy;
+                    float dx = command.payload != null && command.payload.dx != 0f ? command.payload.dx : command.dx;
+                    float dy = command.payload != null && command.payload.dy != 0f ? command.payload.dy : command.dy;
 
                     if (cmdType == "ROTATE_WRIST_CW" || cmdType == "TWO_HAND_ROTATE_CW") dx = -0.05f;
                     else if (cmdType == "ROTATE_WRIST_CCW" || cmdType == "TWO_HAND_ROTATE_CCW") dx = 0.05f;
 
-                    manipulationController?.RotateModel(dx, dy);
+                    GameObject heart = GameObject.Find("Heart");
+                    if (heart != null)
+                    {
+                        float speed = 1.0f;
+                        heart.transform.Rotate(Vector3.up, -dx * speed, Space.World);
+                        heart.transform.Rotate(Vector3.right, dy * speed, Space.World);
+                    }
+                    else
+                    {
+                        manipulationController?.RotateModel(dx, dy);
+                    }
                     break;
                 }
 

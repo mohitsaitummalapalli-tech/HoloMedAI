@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .utils import (
     GestureDebouncer,
     GestureEvent,
+    GestureStateMachine,
     LandmarkIndex,
     LandmarkMath,
     Point3D,
@@ -36,11 +37,13 @@ class EssentialGestureRecognizer:
     """
     Precision recognizer for Advanced Spatial Interactions.
     Calculates geometric rules using 21 3D hand landmarks with zero ambiguity.
+    Enforces a 5-frame temporal stability threshold (hysteresis buffer) between states.
     """
 
     def __init__(self, debouncer: Optional[GestureDebouncer] = None):
         self.debouncer = debouncer or GestureDebouncer(default_cooldown=0.20)
         self.velocity_tracker = VelocityTracker()
+        self.state_machine = GestureStateMachine(stability_threshold=5, initial_state="IDLE")
         self.last_pinch_pos: Optional[Point3D] = None
         self.prev_wrist_angle: Optional[float] = None
         self.prev_spread_dist: Optional[float] = None
@@ -79,7 +82,7 @@ class EssentialGestureRecognizer:
         handedness: str = "Right",
         timestamp: Optional[float] = None,
     ) -> List[GestureEvent]:
-        """Evaluates single-hand landmarks for Pinch-Drag, Point-Measurement, Rotation, and Zoom."""
+        """Evaluates single-hand landmarks for Pinch-Drag, Point-Measurement, Rotation, and Zoom with 5-frame hysteresis."""
         events: List[GestureEvent] = []
         now = timestamp if timestamp is not None else time.time()
 
@@ -103,24 +106,82 @@ class EssentialGestureRecognizer:
         extended_count = sum(1 for ext in f_state.values() if ext)
 
         # -------------------------------------------------------------
-        # 1. PINCH & DRAG (Thumb tip & Index tip held while translating)
+        # Evaluate Candidate Action States
         # -------------------------------------------------------------
-        pinch_hold_time = self.debouncer.update_hold("PINCH", is_pinching)
+        raw_state = "IDLE"
+        dx = 0.0
+        dy = 0.0
+        pinch_conf = 0.0
+
         if is_pinching:
+            raw_state = "PINCH_DRAG"
             pinch_conf = max(0.0, min(1.0, 1.0 - (pinch_dist / 0.28)))
-            if self.last_pinch_pos is not None and pinch_hold_time > 0.05:
+            if self.last_pinch_pos is not None:
                 dx = index_tip.x - self.last_pinch_pos.x
                 dy = index_tip.y - self.last_pinch_pos.y
-                drag_dist = math.sqrt(dx ** 2 + dy ** 2)
 
+        elif f_state["INDEX"] and not f_state["MIDDLE"] and not f_state["RING"] and not f_state["PINKY"]:
+            raw_state = "POINT"
+
+        elif extended_count == 0:
+            raw_state = "FIST_LOCK"
+
+        elif extended_count >= 4 and self.velocity_tracker.get_speed() < 0.30:
+            raw_state = "PALM_STOP"
+
+        else:
+            # Check for wrist rotation
+            wrist_vec_x = index_mcp.x - wrist.x
+            wrist_vec_y = index_mcp.y - wrist.y
+            current_angle = math.degrees(math.atan2(wrist_vec_y, wrist_vec_x))
+            angle_delta = 0.0
+            if self.prev_wrist_angle is not None and extended_count >= 2:
+                angle_delta = current_angle - self.prev_wrist_angle
+                if angle_delta > 180:
+                    angle_delta -= 360
+                elif angle_delta < -180:
+                    angle_delta += 360
+
+                if abs(angle_delta) > 8.0:
+                    raw_state = "ROTATE"
+
+            # Check for radial zoom
+            tips = [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]
+            avg_tip_dist = sum(LandmarkMath.dist_3d(t, palm) for t in tips) / (5.0 * scale)
+            dist_delta = 0.0
+            if self.prev_spread_dist is not None and extended_count >= 3:
+                dist_delta = avg_tip_dist - self.prev_spread_dist
+                if abs(dist_delta) > 0.060:
+                    raw_state = "ZOOM"
+
+            self.prev_wrist_angle = current_angle
+            self.prev_spread_dist = avg_tip_dist
+
+        # -------------------------------------------------------------
+        # Enforce 5-Frame Temporal Stability Threshold Hysteresis
+        # -------------------------------------------------------------
+        confirmed_state = self.state_machine.update(raw_state)
+
+        # -------------------------------------------------------------
+        # Dispatch Confirmed Gesture Actions
+        # -------------------------------------------------------------
+        if confirmed_state == "PINCH_DRAG":
+            pinch_hold_time = self.debouncer.update_hold("PINCH", is_pinching)
+            if self.last_pinch_pos is not None and pinch_hold_time > 0.05:
+                # Euclidean distance dead-zone: suppresses hand tremor at rest
+                drag_dist = math.sqrt(dx ** 2 + dy ** 2)
                 if drag_dist > scale * 0.04:
-                    # Emit DRAG command with delta_x and delta_y
                     events.append(
                         GestureEvent(
                             action="DRAG",
                             confidence=pinch_conf,
                             category="CORE",
                             parameters={
+                                "action": "sys.input.interact",
+                                "state": "pressed",
+                                "target": "Heart",
+                                "dx": round(dx, 4),
+                                "dy": round(dy, 4),
                                 "delta_x": round(dx, 4),
                                 "delta_y": round(dy, 4),
                                 "pinch_distance": round(pinch_dist, 3),
@@ -132,11 +193,7 @@ class EssentialGestureRecognizer:
         else:
             self.last_pinch_pos = None
 
-        # -------------------------------------------------------------
-        # 2. POINT & AI SPATIAL MEASUREMENT
-        # -------------------------------------------------------------
-        is_pointing = f_state["INDEX"] and not f_state["MIDDLE"] and not f_state["RING"] and not f_state["PINKY"] and not is_pinching
-        if is_pointing:
+        if confirmed_state == "POINT":
             measure_data = self._estimate_spatial_measurements(index_tip.x, index_tip.y, scale)
             if self.debouncer.check_debounce("POINT", 0.90, min_confidence=0.85, cooldown=0.15):
                 events.append(
@@ -149,40 +206,20 @@ class EssentialGestureRecognizer:
                     )
                 )
 
-        # -------------------------------------------------------------
-        # 3. ROTATE_WRIST_CW & ROTATE_WRIST_CCW
-        # -------------------------------------------------------------
-        wrist_vec_x = index_mcp.x - wrist.x
-        wrist_vec_y = index_mcp.y - wrist.y
-        current_angle = math.degrees(math.atan2(wrist_vec_y, wrist_vec_x))
-        if self.prev_wrist_angle is not None and not is_pinching and not is_pointing and extended_count >= 2:
-            angle_delta = current_angle - self.prev_wrist_angle
-            if angle_delta > 180:
-                angle_delta -= 360
-            elif angle_delta < -180:
-                angle_delta += 360
-
-            if abs(angle_delta) > 8.0:
-                action = "ROTATE_WRIST_CW" if angle_delta > 0 else "ROTATE_WRIST_CCW"
-                if self.debouncer.check_debounce(action, 0.88, cooldown=0.10):
-                    events.append(
-                        GestureEvent(
-                            action=action,
-                            confidence=0.92,
-                            category="CORE",
-                            parameters={"angle_delta": round(angle_delta, 2)},
-                            timestamp=now,
-                        )
+        elif confirmed_state == "ROTATE" and abs(angle_delta) > 8.0:
+            action = "ROTATE_WRIST_CW" if angle_delta > 0 else "ROTATE_WRIST_CCW"
+            if self.debouncer.check_debounce(action, 0.88, cooldown=0.10):
+                events.append(
+                    GestureEvent(
+                        action=action,
+                        confidence=0.92,
+                        category="CORE",
+                        parameters={"angle_delta": round(angle_delta, 2)},
+                        timestamp=now,
                     )
-        self.prev_wrist_angle = current_angle
+                )
 
-        # -------------------------------------------------------------
-        # 4. ZOOM_SPREAD & ZOOM_CLOSE
-        # -------------------------------------------------------------
-        tips = [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]
-        avg_tip_dist = sum(LandmarkMath.dist_3d(t, palm) for t in tips) / (5.0 * scale)
-        if self.prev_spread_dist is not None and extended_count >= 3 and not is_pinching:
-            dist_delta = avg_tip_dist - self.prev_spread_dist
+        elif confirmed_state == "ZOOM":
             if dist_delta > 0.060:
                 events.append(
                     GestureEvent(
@@ -203,21 +240,12 @@ class EssentialGestureRecognizer:
                         timestamp=now,
                     )
                 )
-        self.prev_spread_dist = avg_tip_dist
 
-        # -------------------------------------------------------------
-        # 5. PALM_STOP: All 5 fingers extended, velocity < 0.30
-        # -------------------------------------------------------------
-        if extended_count >= 4 and not is_pinching:
-            speed = self.velocity_tracker.get_speed()
-            if speed < 0.30:
-                if self.debouncer.check_debounce("PALM_STOP", 0.88, min_confidence=0.8, cooldown=0.35):
-                    events.append(GestureEvent(action="PALM_STOP", confidence=0.92, category="CORE", timestamp=now))
+        elif confirmed_state == "PALM_STOP":
+            if self.debouncer.check_debounce("PALM_STOP", 0.88, min_confidence=0.8, cooldown=0.35):
+                events.append(GestureEvent(action="PALM_STOP", confidence=0.92, category="CORE", timestamp=now))
 
-        # -------------------------------------------------------------
-        # 6. FIST_LOCK: 0 extended fingers (Lock Viewport)
-        # -------------------------------------------------------------
-        if extended_count == 0:
+        elif confirmed_state == "FIST_LOCK":
             if self.debouncer.check_debounce("FIST_LOCK", 0.90, min_confidence=0.85, cooldown=0.35):
                 events.append(GestureEvent(action="FIST_LOCK", confidence=0.94, category="CORE", timestamp=now))
 

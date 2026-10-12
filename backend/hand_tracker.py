@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
 try:
+    from backend.gestures.utils import LandmarkSmoother, LandmarkIndex, GestureStateMachine, Point3D
+except ImportError:
+    from gestures.utils import LandmarkSmoother, LandmarkIndex, GestureStateMachine, Point3D
+
+try:
     import mediapipe as mp
     from mediapipe.tasks import python
     from mediapipe.tasks.python import vision
@@ -91,10 +96,21 @@ class HoloMedHandTracker:
         self.send_interval: float = 0.033  # ~30 Hz UDP send rate
         self._last_timestamp_ms: int = 0
 
-        # Sensitivity Parameters
+        # Sensitivity & Dead-Zone Parameters
         self.rotation_sensitivity: float = 2.5
-        self.pinch_threshold: float = 0.05  # Normalized coordinate distance
+        self.rotation_deadzone: float = 0.005  # Euclidean distance dead-zone threshold for hand tremor suppression
+        self.pinch_threshold: float = 0.05     # Normalized coordinate distance
         self.zoom_sensitivity: float = 3.0
+        self.zoom_deadzone: float = 0.006      # Zoom distance delta dead-zone
+
+        # Landmark Smoothing (Enforces EMA alpha=0.65 for Landmark 0 [wrist] & Landmark 8 [index tip])
+        self.smoothers = [
+            LandmarkSmoother(alpha=0.60, landmark_alphas={LandmarkIndex.WRIST: 0.65, LandmarkIndex.INDEX_FINGER_TIP: 0.65}),
+            LandmarkSmoother(alpha=0.60, landmark_alphas={LandmarkIndex.WRIST: 0.65, LandmarkIndex.INDEX_FINGER_TIP: 0.65}),
+        ]
+
+        # 5-Frame Temporal Stability Threshold Hysteresis State Machine
+        self.state_machine = GestureStateMachine(stability_threshold=5, initial_state="IDLE")
 
         # Performance Monitoring
         self.fps: float = 0.0
@@ -132,7 +148,7 @@ class HoloMedHandTracker:
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
     def process_gestures(self, multi_hand_landmarks: list, frame_w: int, frame_h: int) -> Dict[str, Any]:
-        """Calculates rotation, pinch, and zoom gestures from hand landmarks."""
+        """Calculates rotation, pinch, and zoom gestures from hand landmarks with 5-frame stability hysteresis."""
         current_time = time.time()
         status_info = {
             "gesture": "IDLE",
@@ -142,100 +158,159 @@ class HoloMedHandTracker:
             "zoom_factor": 1.0,
         }
 
+        # 1. Apply EMA Landmark Smoothing (alpha=0.65 for Landmark 0 [wrist] & Landmark 8 [index tip])
+        smoothed_hands = []
+        for i, hand_lms in enumerate(multi_hand_landmarks):
+            sm = self.smoothers[i % len(self.smoothers)]
+            smoothed_hands.append(sm.smooth(hand_lms))
+
+        raw_candidate = "IDLE"
+        zoom_val = 0.0
+        rot_x = 0.0
+        rot_y = 0.0
+        is_pinching = False
+
         # Case 1: Two Hands Detected -> Zoom / Scaling Control
-        if len(multi_hand_landmarks) >= 2:
-            if len(multi_hand_landmarks[0]) > self.WRIST and len(multi_hand_landmarks[1]) > self.WRIST:
-                hand1_wrist = multi_hand_landmarks[0][self.WRIST]
-                hand2_wrist = multi_hand_landmarks[1][self.WRIST]
+        if len(smoothed_hands) >= 2:
+            if len(smoothed_hands[0]) > self.WRIST and len(smoothed_hands[1]) > self.WRIST:
+                hand1_wrist = smoothed_hands[0][self.WRIST]
+                hand2_wrist = smoothed_hands[1][self.WRIST]
                 current_dist = self.calculate_distance(hand1_wrist, hand2_wrist)
 
                 if self.prev_two_hand_dist is not None:
                     dist_delta = current_dist - self.prev_two_hand_dist
-                    if abs(dist_delta) > 0.005:  # Deadband filter
+                    # Strict dead-zone filter for two-hand zoom
+                    if abs(dist_delta) > self.zoom_deadzone:
+                        raw_candidate = "ZOOM"
                         zoom_val = round(dist_delta * self.zoom_sensitivity * 10, 3)
-                        payload = {
-                            "command": "ZOOM",
-                            "target": "HEART",
-                            "value": zoom_val,
-                            "timestamp": current_time,
-                        }
-                        if current_time - self.last_sent_time >= self.send_interval:
-                            self.send_command(payload)
-                            self.last_sent_time = current_time
-
-                        status_info["gesture"] = f"TWO-HAND ZOOM ({'+' if zoom_val > 0 else ''}{zoom_val:.2f})"
-                        status_info["zoom_factor"] = zoom_val
 
                 self.prev_two_hand_dist = current_dist
-                self.prev_hand_pos = None  # Reset single-hand translation to avoid conflicts
-                return status_info
-
-        # Reset two-hand state if fewer than 2 hands
-        self.prev_two_hand_dist = None
+                self.prev_hand_pos = None
 
         # Case 2: Single Hand Tracking
-        if len(multi_hand_landmarks) == 1:
-            landmarks = multi_hand_landmarks[0]
+        elif len(smoothed_hands) == 1:
+            self.prev_two_hand_dist = None
+            landmarks = smoothed_hands[0]
             if len(landmarks) > max(self.THUMB_TIP, self.INDEX_FINGER_TIP, self.INDEX_FINGER_MCP):
                 thumb_tip = landmarks[self.THUMB_TIP]
                 index_tip = landmarks[self.INDEX_FINGER_TIP]
                 index_mcp = landmarks[self.INDEX_FINGER_MCP]
 
-                # 1. Pinch Detection (Thumb Tip to Index Tip)
+                # Pinch Detection (Thumb Tip to Index Tip)
                 pinch_dist = self.calculate_distance(thumb_tip, index_tip)
                 is_pinching = pinch_dist < self.pinch_threshold
                 status_info["pinch"] = is_pinching
 
-                if is_pinching:
-                    if not self.pinch_active and (current_time - self.pinch_cooldown > 0.4):
-                        self.pinch_active = True
-                        self.pinch_cooldown = current_time
-                        payload = {
-                            "command": "SELECT",
-                            "target": "NEAREST",
-                            "organ": "HEART",
-                            "timestamp": current_time,
-                        }
-                        self.send_command(payload)
-                        print(f"[HoloMed Vision] >> Pinch Triggered: SELECT NEAREST")
-                    status_info["gesture"] = "PINCH / SELECT"
-                else:
-                    self.pinch_active = False
-
-                # 2. Hand Translation Delta -> Object Rotation
+                # Calculate Hand Movement Deltas
                 current_x = index_mcp.x
                 current_y = index_mcp.y
+                dx = 0.0
+                dy = 0.0
 
                 if self.prev_hand_pos is not None:
-                    dx = current_x - self.prev_hand_pos[0]
-                    dy = current_y - self.prev_hand_pos[1]
-
-                    # Threshold to suppress natural hand jitter
-                    if abs(dx) > 0.003 or abs(dy) > 0.003:
+                    raw_dx = current_x - self.prev_hand_pos[0]
+                    raw_dy = current_y - self.prev_hand_pos[1]
+                    # Strict Euclidean distance dead-zone to suppress tremor at rest
+                    euclidean_dist = math.sqrt(raw_dx * raw_dx + raw_dy * raw_dy)
+                    if euclidean_dist > self.rotation_deadzone:
+                        dx = raw_dx
+                        dy = raw_dy
                         rot_y = round(dx * self.rotation_sensitivity * 100, 2)
                         rot_x = round(-dy * self.rotation_sensitivity * 100, 2)
 
-                        payload = {
-                            "command": "ROTATE",
-                            "target": "HEART",
-                            "axis": "Y",
-                            "value": rot_y,
-                            "axis_x_value": rot_x,
-                            "timestamp": current_time,
-                        }
-
-                        if current_time - self.last_sent_time >= self.send_interval:
-                            self.send_command(payload)
-                            self.last_sent_time = current_time
-
-                        if not is_pinching:
-                            status_info["gesture"] = f"ROTATE (dY: {rot_y:+.1f}, dX: {rot_x:+.1f})"
-                        status_info["rotation_delta"] = rot_y
-
                 self.prev_hand_pos = (current_x, current_y)
 
+                if is_pinching:
+                    raw_candidate = "PINCH_DRAG"
+                else:
+                    if abs(rot_y) > 0.001 or abs(rot_x) > 0.001:
+                        raw_candidate = "ROTATE"
+
         else:
+            self.prev_two_hand_dist = None
             self.prev_hand_pos = None
+
+        # 2. Enforce 5-frame temporal stability threshold (hysteresis buffer)
+        confirmed_gesture = self.state_machine.update(raw_candidate)
+
+        # 3. Dispatch confirmed gesture commands
+        if confirmed_gesture == "ZOOM" and abs(zoom_val) > 0.001:
+            payload = {
+                "command": "ZOOM",
+                "target": "HEART",
+                "value": zoom_val,
+                "timestamp": current_time,
+            }
+            if current_time - self.last_sent_time >= self.send_interval:
+                self.send_command(payload)
+                self.last_sent_time = current_time
+
+            status_info["gesture"] = f"TWO-HAND ZOOM ({'+' if zoom_val > 0 else ''}{zoom_val:.2f})"
+            status_info["zoom_factor"] = zoom_val
+
+        elif confirmed_gesture == "PINCH_DRAG":
+            # Fire sys.input.interact payload with dx and dy movement deltas
+            payload = {
+                "action": "sys.input.interact",
+                "command": "sys.input.interact",
+                "state": "pressed",
+                "target": "Heart",
+                "dx": rot_y,
+                "dy": rot_x,
+                "timestamp": current_time,
+            }
+            if current_time - self.last_sent_time >= self.send_interval:
+                self.send_command(payload)
+                self.last_sent_time = current_time
+                if not self.pinch_active:
+                    self.pinch_active = True
+                    print(f"[HoloMed Vision] >> Pinch Triggered: sys.input.interact (dx={rot_y:.2f}, dy={rot_x:.2f})")
+
+            status_info["gesture"] = f"PINCH DRAG (dx: {rot_y:+.1f}, dy: {rot_x:+.1f})"
+            status_info["rotation_delta"] = rot_y
+
+        elif confirmed_gesture == "ROTATE" and (abs(rot_y) > 0.001 or abs(rot_x) > 0.001):
+            if self.pinch_active:
+                # Send release payload
+                self.send_command({
+                    "action": "sys.input.interact",
+                    "command": "sys.input.interact",
+                    "state": "released",
+                    "target": "Heart",
+                    "dx": 0.0,
+                    "dy": 0.0,
+                    "timestamp": current_time,
+                })
+                self.pinch_active = False
+
+            payload = {
+                "action": "sys.input.rotate",
+                "command": "ROTATE",
+                "target": "HEART",
+                "dx": rot_y,
+                "dy": rot_x,
+                "timestamp": current_time,
+            }
+            if current_time - self.last_sent_time >= self.send_interval:
+                self.send_command(payload)
+                self.last_sent_time = current_time
+
+            status_info["gesture"] = f"ROTATE (dY: {rot_y:+.1f}, dX: {rot_x:+.1f})"
+            status_info["rotation_delta"] = rot_y
+
+        else:
+            if confirmed_gesture != "PINCH_DRAG" and self.pinch_active:
+                self.send_command({
+                    "action": "sys.input.interact",
+                    "command": "sys.input.interact",
+                    "state": "released",
+                    "target": "Heart",
+                    "dx": 0.0,
+                    "dy": 0.0,
+                    "timestamp": current_time,
+                })
+                self.pinch_active = False
+            status_info["gesture"] = confirmed_gesture
 
         return status_info
 
@@ -442,8 +517,8 @@ class HoloMedHandTracker:
                 cv2.imshow("HoloMed AI - Hand Tracking Preview", frame)
 
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    print("[HoloMed Vision] Exiting vision loop.")
+                if key in (ord("q"), ord("Q"), 27):  # 'q', 'Q' or ESC (27)
+                    print("[HoloMed Vision] Exiting vision loop (clean shutdown).")
                     break
                 elif key == ord("h"):
                     self.show_overlay = not self.show_overlay

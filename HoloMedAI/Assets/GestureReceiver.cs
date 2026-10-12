@@ -64,7 +64,8 @@ namespace HoloMedAI.Gestures
         {
             if (targetModel == null)
             {
-                targetModel = transform;
+                GameObject heartObj = GameObject.Find("Heart");
+                targetModel = heartObj != null ? heartObj.transform : transform;
             }
 
             // Auto-locate or attach required controllers
@@ -222,10 +223,37 @@ namespace HoloMedAI.Gestures
             try
             {
                 CoreGestureCommand parsedCommand = JsonUtility.FromJson<CoreGestureCommand>(trimmed);
-                if (parsedCommand == null || string.IsNullOrEmpty(parsedCommand.command))
+                if (parsedCommand == null)
                 {
                     Log(GestureLogLevel.WARNING, $"Failed to parse command from JSON: {trimmed}");
                     return;
+                }
+
+                if (string.IsNullOrEmpty(parsedCommand.command) && !string.IsNullOrEmpty(parsedCommand.action))
+                {
+                    parsedCommand.command = parsedCommand.action;
+                }
+
+                if (string.IsNullOrEmpty(parsedCommand.command))
+                {
+                    Log(GestureLogLevel.WARNING, $"Failed to parse command from JSON: {trimmed}");
+                    return;
+                }
+
+                // Handle sys.input.interact on GameObject named exactly "Heart"
+                if (parsedCommand.command.Equals("sys.input.interact", StringComparison.OrdinalIgnoreCase) ||
+                    parsedCommand.command.Equals("INTERACT", StringComparison.OrdinalIgnoreCase))
+                {
+                    float dx = parsedCommand.payload != null && parsedCommand.payload.dx != 0f ? parsedCommand.payload.dx : parsedCommand.dx;
+                    float dy = parsedCommand.payload != null && parsedCommand.payload.dy != 0f ? parsedCommand.payload.dy : parsedCommand.dy;
+                    GameObject heartObj = GameObject.Find("Heart");
+                    if (heartObj != null)
+                    {
+                        float speed = 1.0f;
+                        heartObj.transform.Rotate(Vector3.up, -dx * speed, Space.World);
+                        heartObj.transform.Rotate(Vector3.right, dy * speed, Space.World);
+                        return;
+                    }
                 }
 
                 commandRouter.RouteCommand(parsedCommand);
