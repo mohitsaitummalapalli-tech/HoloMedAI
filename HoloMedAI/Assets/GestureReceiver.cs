@@ -183,11 +183,27 @@ namespace HoloMedAI.Gestures
             }
         }
 
+        // Thread-Safe Main Thread Action Queue
+        private static readonly ConcurrentQueue<Action> _executionQueue = new ConcurrentQueue<Action>();
+
         /// <summary>
         /// Unity Main Thread Update: safely dequeues and deserializes packets, routing them to subsystems.
         /// </summary>
         private void Update()
         {
+            // Execute queued main thread actions
+            while (_executionQueue.TryDequeue(out Action action))
+            {
+                try
+                {
+                    action?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Log(GestureLogLevel.ERROR, $"ExecutionQueue error: {ex.Message}");
+                }
+            }
+
             // Process queued packets
             while (packetQueue.TryDequeue(out string rawPayload))
             {
@@ -249,6 +265,7 @@ namespace HoloMedAI.Gestures
                     GameObject heartObj = GameObject.Find("Heart");
                     if (heartObj != null)
                     {
+                        Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
                         float speed = 1.0f;
                         heartObj.transform.Rotate(Vector3.up, -dx * speed, Space.World);
                         heartObj.transform.Rotate(Vector3.right, dy * speed, Space.World);

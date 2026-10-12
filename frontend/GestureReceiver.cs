@@ -159,8 +159,15 @@ namespace HoloMedAI.Gestures
             }
         }
 
+        private static readonly ConcurrentQueue<Action> _executionQueue = new ConcurrentQueue<Action>();
+
         private void Update()
         {
+            while (_executionQueue.TryDequeue(out Action action))
+            {
+                try { action?.Invoke(); } catch { }
+            }
+
             while (packetQueue.TryDequeue(out string rawPayload))
             {
                 if (string.IsNullOrEmpty(rawPayload)) continue;
@@ -216,6 +223,7 @@ namespace HoloMedAI.Gestures
                     GameObject heartObj = GameObject.Find("Heart");
                     if (heartObj != null)
                     {
+                        Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
                         float speed = 1.0f;
                         heartObj.transform.Rotate(Vector3.up, -dx * speed, Space.World);
                         heartObj.transform.Rotate(Vector3.right, dy * speed, Space.World);

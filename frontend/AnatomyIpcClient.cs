@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -13,9 +12,8 @@ namespace HoloMedAI.Gestures
 {
     /// <summary>
     /// HoloMed AI - Anatomy IPC Client (Frontend Mirror)
-    /// Connects to Python Perception / Vision IPC via WebSocket and UDP.
-    /// Extracts dx and dy float values on 'sys.input.interact' payloads.
-    /// Targets the GameObject named exactly "Heart" and applies 3D rotation on the main thread.
+    /// Connects to Python Perception / Vision IPC via UDP (port 5052) and WebSocket (port 8080).
+    /// Uses Main Thread Action Dispatching to rotate the GameObject named "Heart".
     /// </summary>
     [DisallowMultipleComponent]
     public class AnatomyIpcClient : MonoBehaviour
@@ -29,26 +27,27 @@ namespace HoloMedAI.Gestures
         [Tooltip("Speed multiplier for delta rotation.")]
         [SerializeField] private float rotationSpeed = 1.0f;
 
+        [Header("Networking Configuration")]
+        [Tooltip("UDP Port matching Python vision HUD (default: 5052)")]
+        [SerializeField] private int udpPort = 5052;
+        [SerializeField] private bool enableUdp = true;
+
         [Header("WebSocket Configuration")]
         [SerializeField] private bool enableWebSocket = true;
         [SerializeField] private string websocketUri = "ws://127.0.0.1:8080";
         [SerializeField] private float reconnectIntervalSeconds = 3.0f;
 
-        [Header("UDP Fallback Configuration")]
-        [SerializeField] private bool enableUdpFallback = true;
-        [SerializeField] private int udpPort = 5052;
-
         [Header("Diagnostics")]
         [SerializeField] private bool verboseLogging = false;
 
-        // Thread-Safe Inbound Queue
-        private readonly ConcurrentQueue<string> inboundQueue = new ConcurrentQueue<string>();
+        // 1. Thread-safe execution queue for Main Thread Dispatching
+        private static readonly ConcurrentQueue<Action> _executionQueue = new ConcurrentQueue<Action>();
 
-        // Networking state
-        private ClientWebSocket webSocket;
-        private CancellationTokenSource cts;
+        // Network state
         private UdpClient udpClient;
         private Thread udpThread;
+        private ClientWebSocket webSocket;
+        private CancellationTokenSource cts;
         private volatile bool isRunning = false;
 
         [Serializable]
@@ -73,14 +72,15 @@ namespace HoloMedAI.Gestures
             isRunning = true;
             cts = new CancellationTokenSource();
 
+            // 3. Port Alignment: Explicitly listen on UDP 5052
+            if (enableUdp)
+            {
+                StartUdpListener();
+            }
+
             if (enableWebSocket)
             {
                 Task.Run(() => WebSocketWorker(cts.Token));
-            }
-
-            if (enableUdpFallback)
-            {
-                StartUdpListener();
             }
         }
 
@@ -88,34 +88,30 @@ namespace HoloMedAI.Gestures
         {
             if (targetHeart == null)
             {
-                targetHeart = GameObject.Find(targetGameObjectName);
-                if (targetHeart == null)
+                targetHeart = GameObject.Find(targetGameObjectName) ?? GameObject.Find("Heart");
+            }
+        }
+
+        // 2. Execute in Update(): dequeue actions on the Unity Main Render Thread
+        private void Update()
+        {
+            while (_executionQueue.TryDequeue(out Action action))
+            {
+                try
                 {
-                    targetHeart = GameObject.Find("Heart");
+                    action?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[AnatomyIpcClient] Main Thread execution error: {ex.Message}");
                 }
             }
         }
 
-        private void Update()
-        {
-            // Ensure target is bound if loaded dynamically
-            if (targetHeart == null)
-            {
-                LocateTarget();
-            }
-
-            // Process all pending packets on Unity Main Render Thread
-            while (inboundQueue.TryDequeue(out string rawJson))
-            {
-                ProcessPayload(rawJson);
-            }
-        }
-
         /// <summary>
-        /// Parses incoming JSON payload, extracts dx and dy for sys.input.interact,
-        /// and applies 3D rotation to the "Heart" GameObject on the main thread.
+        /// Called from background networking threads. Enqueues actions to _executionQueue.
         /// </summary>
-        public void ProcessPayload(string rawJson)
+        public void EnqueueIncomingPayload(string rawJson)
         {
             if (string.IsNullOrEmpty(rawJson)) return;
 
@@ -133,30 +129,34 @@ namespace HoloMedAI.Gestures
                 if (actionType.Equals("sys.input.interact", StringComparison.OrdinalIgnoreCase) ||
                     actionType.Equals("INTERACT", StringComparison.OrdinalIgnoreCase) ||
                     actionType.Equals("PINCH_DRAG", StringComparison.OrdinalIgnoreCase) ||
-                    actionType.Equals("DRAG", StringComparison.OrdinalIgnoreCase))
+                    actionType.Equals("DRAG", StringComparison.OrdinalIgnoreCase) ||
+                    actionType.Equals("ROTATE", StringComparison.OrdinalIgnoreCase))
                 {
                     float dx = msg.dx;
                     float dy = msg.dy;
 
-                    // Fallback parse if JsonUtility did not map flat fields
                     if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
                     {
                         ExtractDeltasFallback(trimmed, out dx, out dy);
                     }
 
-                    if (targetHeart != null)
+                    // 1. Implement Main Thread Dispatching via _executionQueue
+                    _executionQueue.Enqueue(() =>
                     {
-                        // On the main thread, apply 3D rotation based on the deltas:
-                        // Horizontal movement (dx) rotates around World Y axis
-                        // Vertical movement (dy) rotates around World X axis
-                        targetHeart.transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
-                        targetHeart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
-
-                        if (verboseLogging)
+                        if (targetHeart == null)
                         {
-                            Debug.Log($"[AnatomyIpcClient] Rotated Heart -> dx: {dx:F3}, dy: {dy:F3}");
+                            LocateTarget();
                         }
-                    }
+
+                        if (targetHeart != null)
+                        {
+                            // 4. Debug Logs inside the Update loop right before rotating the object
+                            Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+
+                            targetHeart.transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                            targetHeart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                        }
+                    });
                 }
             }
             catch (Exception ex)
@@ -199,6 +199,54 @@ namespace HoloMedAI.Gestures
             catch { }
         }
 
+        #region UDP Implementation
+
+        private void StartUdpListener()
+        {
+            try
+            {
+                udpClient = new UdpClient();
+                udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, udpPort));
+
+                udpThread = new Thread(UdpListenLoop)
+                {
+                    IsBackground = true,
+                    Name = "AnatomyIpcClient_UDP_Worker"
+                };
+                udpThread.Start();
+                Debug.Log($"[AnatomyIpcClient] Listening on UDP port {udpPort}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AnatomyIpcClient] UDP Bind warning on port {udpPort}: {ex.Message}");
+            }
+        }
+
+        private void UdpListenLoop()
+        {
+            IPEndPoint endPoint = new IPEndPoint(IPAddress.Any, 0);
+            while (isRunning)
+            {
+                try
+                {
+                    byte[] data = udpClient.Receive(ref endPoint);
+                    if (data != null && data.Length > 0)
+                    {
+                        string text = Encoding.UTF8.GetString(data);
+                        EnqueueIncomingPayload(text);
+                    }
+                }
+                catch (SocketException)
+                {
+                    break;
+                }
+                catch { }
+            }
+        }
+
+        #endregion
+
         #region WebSocket Implementation
 
         private async Task WebSocketWorker(CancellationToken token)
@@ -228,7 +276,7 @@ namespace HoloMedAI.Gestures
                             }
 
                             string text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                            inboundQueue.Enqueue(text);
+                            EnqueueIncomingPayload(text);
                         }
                     }
                 }
@@ -240,53 +288,6 @@ namespace HoloMedAI.Gestures
                 {
                     try { await Task.Delay((int)(reconnectIntervalSeconds * 1000), token); } catch { }
                 }
-            }
-        }
-
-        #endregion
-
-        #region UDP Implementation
-
-        private void StartUdpListener()
-        {
-            try
-            {
-                udpClient = new UdpClient();
-                udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, udpPort));
-
-                udpThread = new Thread(UdpListenLoop)
-                {
-                    IsBackground = true,
-                    Name = "AnatomyIpcClient_UDP_Worker"
-                };
-                udpThread.Start();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[AnatomyIpcClient] UDP Bind warning on port {udpPort}: {ex.Message}");
-            }
-        }
-
-        private void UdpListenLoop()
-        {
-            IPEndPoint endPoint = new IPEndPoint(IPAddress.Any, 0);
-            while (isRunning)
-            {
-                try
-                {
-                    byte[] data = udpClient.Receive(ref endPoint);
-                    if (data != null && data.Length > 0)
-                    {
-                        string text = Encoding.UTF8.GetString(data);
-                        inboundQueue.Enqueue(text);
-                    }
-                }
-                catch (SocketException)
-                {
-                    break;
-                }
-                catch { }
             }
         }
 

@@ -26,6 +26,8 @@ public class HologramController : MonoBehaviour
         public string axis;
         public float value;
         public float axis_x_value;
+        public float dx;
+        public float dy;
         public bool auto_zoom;
         public string ai_speech_response;
         public float distance_cm;
@@ -156,6 +158,10 @@ public class HologramController : MonoBehaviour
 
             switch (commandType.ToUpper())
             {
+                case "SYS.INPUT.INTERACT":
+                case "INTERACT":
+                case "DRAG":
+                case "PINCH_DRAG":
                 case "ROTATE":
                     ExecuteRotate(cmd);
                     break;
@@ -191,15 +197,23 @@ public class HologramController : MonoBehaviour
         float rotDeltaY = 0f;
         float rotDeltaX = 0f;
 
-        string axis = (cmd.axis ?? "Y").ToUpper();
-        if (axis == "Y")
+        if (cmd.dx != 0f || cmd.dy != 0f)
         {
-            rotDeltaY = cmd.value;
-            rotDeltaX = cmd.axis_x_value;
+            rotDeltaY = cmd.dx;
+            rotDeltaX = cmd.dy;
         }
-        else if (axis == "X")
+        else
         {
-            rotDeltaX = cmd.value;
+            string axis = (cmd.axis ?? "Y").ToUpper();
+            if (axis == "Y")
+            {
+                rotDeltaY = cmd.value;
+                rotDeltaX = cmd.axis_x_value;
+            }
+            else if (axis == "X")
+            {
+                rotDeltaX = cmd.value;
+            }
         }
 
         targetRotationEuler.y += rotDeltaY;
