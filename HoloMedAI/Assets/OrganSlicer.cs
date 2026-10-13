@@ -15,6 +15,13 @@ using UnityEngine;
 /// </summary>
 public class OrganSlicer : MonoBehaviour
 {
+    [Header("Cross-Section Clipping Plane (Glass Sheet)")]
+    [Tooltip("Visual and mathematical 'glass sheet' defining the cutting plane position and normal")]
+    public Transform slicePlaneTransform;
+
+    [Tooltip("Target heart Material using Custom/CrossSectionHeart (auto-detected if null)")]
+    public Material targetMaterial;
+
     [Header("Slicing Visual Components")]
     [Tooltip("Internal chamber / cutaway mesh revealed upon slicing")]
     public GameObject crossSectionCutaway;
@@ -42,17 +49,106 @@ public class OrganSlicer : MonoBehaviour
 
     private Vector3 leftInitialPos;
     private Vector3 rightInitialPos;
+    private Vector3 initialPlanePos = new Vector3(0f, -0.5f, -1.5f);
+    private Quaternion initialPlaneRot = Quaternion.identity;
     private Coroutine sliceAnimCoroutine;
+    private Renderer heartRenderer;
 
     void Awake()
     {
         if (vitalsManager == null)
         {
-            vitalsManager = FindFirstObjectByType<VitalsSimulationManager>();
+            vitalsManager = FindAnyObjectByType<VitalsSimulationManager>();
         }
 
         if (leftHalf != null) leftInitialPos = leftHalf.localPosition;
         if (rightHalf != null) rightInitialPos = rightHalf.localPosition;
+
+        if (slicePlaneTransform == null)
+        {
+            GameObject planeObj = GameObject.Find("SlicePlane");
+            if (planeObj != null) slicePlaneTransform = planeObj.transform;
+        }
+
+        if (slicePlaneTransform != null)
+        {
+            initialPlanePos = slicePlaneTransform.position;
+            initialPlaneRot = slicePlaneTransform.rotation;
+        }
+
+        FindTargetMaterial();
+    }
+
+    void Start()
+    {
+        FindTargetMaterial();
+        UpdateSlicePlaneShader();
+    }
+
+    void Update()
+    {
+        UpdateSlicePlaneShader();
+    }
+
+    private void FindTargetMaterial()
+    {
+        if (targetMaterial == null)
+        {
+            if (heartRenderer == null) heartRenderer = GetComponentInChildren<Renderer>();
+            if (heartRenderer != null)
+            {
+                targetMaterial = Application.isPlaying ? heartRenderer.material : heartRenderer.sharedMaterial;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Calculates the plane equation (Vector4) from slicePlaneTransform and updates the shader material.
+    /// Plane equation: dot(worldPos, normal) - distance >= 0
+    /// </summary>
+    public void UpdateSlicePlaneShader()
+    {
+        if (slicePlaneTransform == null)
+        {
+            GameObject planeObj = GameObject.Find("SlicePlane");
+            if (planeObj != null)
+            {
+                slicePlaneTransform = planeObj.transform;
+                initialPlanePos = slicePlaneTransform.position;
+                initialPlaneRot = slicePlaneTransform.rotation;
+            }
+        }
+
+        if (slicePlaneTransform == null) return;
+
+        if (targetMaterial == null)
+        {
+            FindTargetMaterial();
+        }
+
+        if (targetMaterial == null) return;
+
+        // Plane normal: forward vector of slicePlaneTransform
+        Vector3 normal = slicePlaneTransform.forward.normalized;
+        // Plane distance: projection of plane position onto normal
+        float distance = Vector3.Dot(normal, slicePlaneTransform.position);
+        Vector4 planeVector = new Vector4(normal.x, normal.y, normal.z, distance);
+
+        targetMaterial.SetVector("_SlicePlane", planeVector);
+    }
+
+    /// <summary>
+    /// Moves the slicePlaneTransform forward and backward along the Z-axis based on gesture input.
+    /// Clamps position between -1.5f (in front of heart) and 1.5f (behind heart).
+    /// </summary>
+    /// <param name="depthDelta">Depth delta movement along the slicing axis</param>
+    public void UpdateSliceDepth(float depthDelta)
+    {
+        if (slicePlaneTransform == null) return;
+
+        float newZ = Mathf.Clamp(slicePlaneTransform.position.z + (depthDelta * 15f), -1.5f, 1.5f);
+        slicePlaneTransform.position = new Vector3(0f, -0.5f, newZ);
+        UpdateSlicePlaneShader();
     }
 
     /// <summary>
@@ -113,6 +209,13 @@ public class OrganSlicer : MonoBehaviour
         {
             if (sliceAnimCoroutine != null) StopCoroutine(sliceAnimCoroutine);
             sliceAnimCoroutine = StartCoroutine(AnimateHalvesSeparation(false));
+        }
+
+        if (slicePlaneTransform != null && (initialPlanePos != Vector3.zero || initialPlaneRot != Quaternion.identity))
+        {
+            slicePlaneTransform.position = initialPlanePos;
+            slicePlaneTransform.rotation = initialPlaneRot;
+            UpdateSlicePlaneShader();
         }
 
         OnSliceStateChanged?.Invoke(false);

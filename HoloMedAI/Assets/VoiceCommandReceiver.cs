@@ -52,8 +52,11 @@ public class VoiceCommandReceiver : MonoBehaviour
     }
 
     [Header("Network Configuration")]
-    [Tooltip("UDP Port for Voice Commands (Default: 5052, Gestures use 5053)")]
-    public int port = 5052;
+    [Tooltip("UDP Port for Voice Commands (Default: 5053, Gestures use 5052)")]
+    public int port = 5053;
+
+    [Header("Voice Nervous System Events")]
+    public UnityEngine.Events.UnityEvent OnResetModel = new UnityEngine.Events.UnityEvent();
 
     [Header("Target Hologram & State Manager")]
     [Tooltip("Target Organ Transform. Defaults to this GameObject.")]
@@ -89,6 +92,7 @@ public class VoiceCommandReceiver : MonoBehaviour
     public static event Action<string> OnAiSpeechGenerated;
 
     private readonly ConcurrentQueue<string> incomingQueue = new ConcurrentQueue<string>();
+    private readonly ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
     private readonly List<RendererSnapshot> rendererSnapshots = new List<RendererSnapshot>();
     private Thread receiveThread;
     private UdpClient udpClient;
@@ -111,24 +115,24 @@ public class VoiceCommandReceiver : MonoBehaviour
         if (organStateManager == null)
         {
             organStateManager = TargetTransform.GetComponent<OrganStateManager>();
-            if (organStateManager == null) organStateManager = FindFirstObjectByType<OrganStateManager>();
+            if (organStateManager == null) organStateManager = FindAnyObjectByType<OrganStateManager>();
         }
 
         if (organSlicer == null)
         {
             organSlicer = TargetTransform.GetComponent<OrganSlicer>();
-            if (organSlicer == null) organSlicer = FindFirstObjectByType<OrganSlicer>();
+            if (organSlicer == null) organSlicer = FindAnyObjectByType<OrganSlicer>();
         }
 
         if (vitalsManager == null)
         {
-            vitalsManager = FindFirstObjectByType<VitalsSimulationManager>();
+            vitalsManager = FindAnyObjectByType<VitalsSimulationManager>();
         }
 
         if (dicomLoader == null)
         {
             dicomLoader = TargetTransform.GetComponent<DICOMVolumeLoader>();
-            if (dicomLoader == null) dicomLoader = FindFirstObjectByType<DICOMVolumeLoader>();
+            if (dicomLoader == null) dicomLoader = FindAnyObjectByType<DICOMVolumeLoader>();
         }
 
         CacheRendererStates();
@@ -142,6 +146,19 @@ public class VoiceCommandReceiver : MonoBehaviour
         if (Input.GetKeyDown(KeyCode.F1) || Input.GetKeyDown(KeyCode.H))
         {
             showOnScreenHUD = !showOnScreenHUD;
+        }
+
+        // Execute queued main thread actions securely
+        while (mainThreadActions.TryDequeue(out Action action))
+        {
+            try
+            {
+                action?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[VoiceCommandReceiver] Action execution error: {ex.Message}");
+            }
         }
 
         // Process queued UDP packets on Unity Main Thread
@@ -159,7 +176,7 @@ public class VoiceCommandReceiver : MonoBehaviour
         receiveThread = new Thread(ReceiveLoop)
         {
             IsBackground = true,
-            Name = "HoloMedVoiceUdpListener_5052"
+            Name = "HoloMedVoiceUdpListener_5053"
         };
         receiveThread.Start();
 
@@ -170,7 +187,9 @@ public class VoiceCommandReceiver : MonoBehaviour
     {
         try
         {
-            udpClient = new UdpClient(port);
+            udpClient = new UdpClient();
+            udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, port));
             IPEndPoint sender = new IPEndPoint(IPAddress.Any, 0);
 
             while (isRunning)
@@ -274,21 +293,35 @@ public class VoiceCommandReceiver : MonoBehaviour
                     HandleHighlight(payload);
                     break;
 
+                case "ENABLE_SLICE":
                 case "SECTION_VIEW":
                 case "SLICE":
                 case "CUT":
-                    if (organSlicer != null)
+                    mainThreadActions.Enqueue(() =>
                     {
-                        organSlicer.ExecuteSlice();
-                    }
-                    else if (organStateManager != null)
+                        if (organSlicer != null)
+                        {
+                            organSlicer.ExecuteSlice();
+                        }
+                        else if (organStateManager != null)
+                        {
+                            organStateManager.isSectionCutawayActive = !organStateManager.isSectionCutawayActive;
+                        }
+                        if (vitalsManager != null)
+                        {
+                            vitalsManager.TriggerTraumaSpike("Voice Surgical Incision", 1.2f);
+                        }
+                    });
+                    break;
+
+                case "DISABLE_SLICE":
+                    mainThreadActions.Enqueue(() =>
                     {
-                        organStateManager.isSectionCutawayActive = !organStateManager.isSectionCutawayActive;
-                    }
-                    if (vitalsManager != null)
-                    {
-                        vitalsManager.TriggerTraumaSpike("Voice Surgical Incision", 1.2f);
-                    }
+                        if (organSlicer != null)
+                        {
+                            organSlicer.ResetSlice();
+                        }
+                    });
                     break;
 
                 case "LOAD_DICOM_SERIES":
@@ -310,9 +343,14 @@ public class VoiceCommandReceiver : MonoBehaviour
                     break;
 
                 case "RESET":
-                    HandleReset();
-                    if (vitalsManager != null) vitalsManager.ResetVitals();
-                    if (organSlicer != null) organSlicer.ResetSlice();
+                    mainThreadActions.Enqueue(() =>
+                    {
+                        Debug.Log("<color=#00E5FF><b>[ULTRON]</b></color> Executing RESET on Main Thread.");
+                        OnResetModel?.Invoke();
+                        HandleReset();
+                        if (vitalsManager != null) vitalsManager.ResetVitals();
+                        if (organSlicer != null) organSlicer.ResetSlice();
+                    });
                     break;
 
                 default:

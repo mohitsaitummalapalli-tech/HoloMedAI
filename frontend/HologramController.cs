@@ -128,6 +128,14 @@ public class HologramController : MonoBehaviour
         // Smooth Transform Interpolation
         if (hologramRoot != null)
         {
+            // If ModelManipulator is attached to hologramRoot, yield transform control and do not snap back
+            if (hologramRoot.GetComponent<HoloMedAI.Gestures.ModelManipulator>() != null)
+            {
+                targetRotationEuler = hologramRoot.localRotation.eulerAngles;
+                targetScale = hologramRoot.localScale;
+                return;
+            }
+
             hologramRoot.localRotation = Quaternion.Slerp(
                 hologramRoot.localRotation,
                 Quaternion.Euler(targetRotationEuler),

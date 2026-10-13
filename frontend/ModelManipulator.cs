@@ -67,6 +67,12 @@ namespace HoloMedAI.Gestures
         /// </summary>
         private void Update()
         {
+            // Reset transform explicitly bound to the 'r' key
+            if (Input.GetKeyDown(KeyCode.R))
+            {
+                ResetTransform();
+            }
+
             while (_executionQueue.TryDequeue(out Action action))
             {
                 try

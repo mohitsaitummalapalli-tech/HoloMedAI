@@ -177,6 +177,14 @@ namespace HoloMedAI.Gestures
 
         private void Update()
         {
+            // Reset transform explicitly bound to the 'r' key
+            if (Input.GetKeyDown(KeyCode.R))
+            {
+                Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                target?.GetComponent<ModelManipulator>()?.ResetTransform();
+                manipulationController?.ResetTransform();
+            }
+
             while (_executionQueue.TryDequeue(out Action action))
             {
                 try { action?.Invoke(); } catch { }
@@ -231,6 +239,45 @@ namespace HoloMedAI.Gestures
 
                 string cmd = parsedCommand.command.Trim();
 
+                // 0. IDLE / PAUSED payload handling - Freeze model in place, retain current state (NEVER reset)
+                if (cmd.Equals("IDLE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PAUSED", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PAUSED (FIST)", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Explicitly do NOT reset transform. Retain current position, rotation, and scale.
+                    return;
+                }
+
+                // If state is explicitly idle, ignore without resetting transform
+                if (!string.IsNullOrEmpty(parsedCommand.state) &&
+                    parsedCommand.state.Equals("idle", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                // Explicit RESET command (triggered ONLY via 'r' key in Python CV preview)
+                if (cmd.Equals("RESET", StringComparison.OrdinalIgnoreCase))
+                {
+                    _executionQueue.Enqueue(() =>
+                    {
+                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                        if (target != null)
+                        {
+                            ModelManipulator manip = target.GetComponent<ModelManipulator>();
+                            if (manip != null)
+                            {
+                                manip.ResetTransform();
+                            }
+                            else if (manipulationController != null)
+                            {
+                                manipulationController.ResetTransform();
+                            }
+                        }
+                    });
+                    commandRouter.RouteCommand(parsedCommand);
+                    return;
+                }
+
                 // 1. ROTATION (sys.input.interact, ROTATE, PINCH_DRAG, DRAG)
                 if (cmd.Equals("sys.input.interact", StringComparison.OrdinalIgnoreCase) ||
                     cmd.Equals("INTERACT", StringComparison.OrdinalIgnoreCase) ||
@@ -244,6 +291,12 @@ namespace HoloMedAI.Gestures
                     if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
                     {
                         ExtractDeltas(trimmed, out dx, out dy);
+                    }
+
+                    // Zero delta (stationary or release payload) -> freeze in place, do not rotate
+                    if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
+                    {
+                        return;
                     }
 
                     _executionQueue.Enqueue(() =>

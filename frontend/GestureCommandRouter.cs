@@ -214,9 +214,8 @@ namespace HoloMedAI.Gestures
                 }
 
                 case "RESET":
-                case "EMERGENCY_RESET":
                 {
-                    Log(GestureLogLevel.INFO, "[Router] RESET command received -> Resetting transform & state.");
+                    Log(GestureLogLevel.INFO, "[Router] RESET command received (R key) -> Resetting transform & state.");
                     manipulationController?.ResetTransform();
                     anatomyController?.ClearSelection();
                     stateManager?.ResetState();
@@ -224,10 +223,13 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                case "EMERGENCY_RESET":
                 case "PALM_STOP":
                 case "FIST_LOCK":
+                case "PAUSED":
+                case "IDLE":
                 {
-                    Log(GestureLogLevel.DEBUG, "[Router] STOP/LOCK gesture -> Freezing state.");
+                    Log(GestureLogLevel.DEBUG, $"[Router] Pause/Lock/Idle state ({cmdType}) -> Freezing state in place without resetting transform.");
                     stateManager?.ResetState();
                     manipulationController?.StopRotation();
                     appStateManager?.UpdateInteractionState(InteractionState.IDLE);
