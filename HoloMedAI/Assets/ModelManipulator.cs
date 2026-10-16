@@ -65,6 +65,16 @@ namespace HoloMedAI.Gestures
         [Header("Diagnostics")]
         [SerializeField] private bool verboseLogging = false;
 
+        [Header("Slerp Smoothing Integration")]
+        [Tooltip("ModelRotator component for buttery-smooth Slerp rotation and deadzone filtering.")]
+        [SerializeField] private ModelRotator modelRotator;
+
+        public ModelRotator Rotator
+        {
+            get => modelRotator;
+            set => modelRotator = value;
+        }
+
         // Thread-safe main-thread execution queue
         private static readonly ConcurrentQueue<Action> _executionQueue = new ConcurrentQueue<Action>();
 
@@ -78,6 +88,11 @@ namespace HoloMedAI.Gestures
             if (Instance == null)
             {
                 Instance = this;
+            }
+
+            if (modelRotator == null)
+            {
+                modelRotator = GetComponent<ModelRotator>() ?? (TargetTransform != null ? TargetTransform.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
             }
 
             Transform target = TargetTransform;
@@ -170,15 +185,28 @@ namespace HoloMedAI.Gestures
 
         /// <summary>
         /// Rotation:
-        /// Applies continuous rotation around World Y (horizontal) and World X (vertical).
+        /// Uses ModelRotator (Quaternion.Slerp with soft-knee deadzone) when available,
+        /// falling back gracefully to TargetTransform.Rotate in World Space.
         /// </summary>
         public void Rotate(float dx, float dy)
         {
             _executionQueue.Enqueue(() =>
             {
-                Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
-                TargetTransform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
-                TargetTransform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                if (modelRotator == null)
+                {
+                    modelRotator = GetComponent<ModelRotator>() ?? (TargetTransform != null ? TargetTransform.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+                }
+
+                if (modelRotator != null)
+                {
+                    modelRotator.Rotate(dx, dy);
+                }
+                else
+                {
+                    Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+                    TargetTransform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                    TargetTransform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                }
             });
         }
 
@@ -194,6 +222,16 @@ namespace HoloMedAI.Gestures
         {
             _executionQueue.Enqueue(() =>
             {
+                if (modelRotator == null)
+                {
+                    modelRotator = GetComponent<ModelRotator>() ?? (TargetTransform != null ? TargetTransform.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+                }
+
+                if (modelRotator != null)
+                {
+                    modelRotator.ResetRotation();
+                }
+
                 Transform target = TargetTransform;
                 target.localPosition = new Vector3(0f, -0.5f, 0f);
                 target.localRotation = Quaternion.identity;

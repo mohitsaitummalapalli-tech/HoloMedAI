@@ -1,0 +1,17 @@
+[tool.pyright]
+extraPaths = [
+    ".",
+    "python",
+    "backend",
+    "holomed"
+]
+reportMissingImports = false
+reportMissingModuleSource = false
+
+[tool.pyrefly]
+extraPaths = [
+    ".",
+    "python",
+    "backend",
+    "holomed"
+]

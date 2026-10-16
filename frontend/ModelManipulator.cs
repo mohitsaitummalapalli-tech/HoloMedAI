@@ -17,6 +17,37 @@ namespace HoloMedAI.Gestures
     {
         public static ModelManipulator Instance { get; private set; }
 
+        [Header("Target Model")]
+        [Tooltip("Assign the root Transform of the model (e.g. Heart). Defaults to this transform.")]
+        [SerializeField] private Transform targetTransform;
+
+        public Transform TargetTransform
+        {
+            get => targetTransform != null ? targetTransform : transform;
+            set
+            {
+                targetTransform = value;
+                if (targetTransform != null)
+                {
+                    initialPosition = targetTransform.localPosition;
+                    initialRotation = targetTransform.localRotation;
+                    initialScale = targetTransform.localScale;
+                }
+            }
+        }
+
+        public Transform targetModel
+        {
+            get => TargetTransform;
+            set => TargetTransform = value;
+        }
+
+        public Transform TargetModel
+        {
+            get => TargetTransform;
+            set => TargetTransform = value;
+        }
+
         [Header("Motion Calibration")]
         [Tooltip("Pan / Translation speed multiplier.")]
         [SerializeField] private float moveSpeed = 1.0f;
@@ -34,6 +65,16 @@ namespace HoloMedAI.Gestures
         [Header("Diagnostics")]
         [SerializeField] private bool verboseLogging = false;
 
+        [Header("Slerp Smoothing Integration")]
+        [Tooltip("ModelRotator component for buttery-smooth Slerp rotation and deadzone filtering.")]
+        [SerializeField] private ModelRotator modelRotator;
+
+        public ModelRotator Rotator
+        {
+            get => modelRotator;
+            set => modelRotator = value;
+        }
+
         // Thread-safe main-thread execution queue
         private static readonly ConcurrentQueue<Action> _executionQueue = new ConcurrentQueue<Action>();
 
@@ -49,9 +90,15 @@ namespace HoloMedAI.Gestures
                 Instance = this;
             }
 
-            initialPosition = transform.localPosition;
-            initialRotation = transform.localRotation;
-            initialScale = transform.localScale;
+            if (modelRotator == null)
+            {
+                modelRotator = GetComponent<ModelRotator>() ?? (TargetTransform != null ? TargetTransform.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+            }
+
+            Transform target = TargetTransform;
+            initialPosition = target.localPosition;
+            initialRotation = target.localRotation;
+            initialScale = target.localScale;
         }
 
         private void OnDestroy()
@@ -106,8 +153,9 @@ namespace HoloMedAI.Gestures
             _executionQueue.Enqueue(() =>
             {
                 Debug.Log($"[HoloMed] Zooming Heart delta:{delta}");
-                Vector3 newScale = transform.localScale + (Vector3.one * delta * zoomSpeed);
-                transform.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+                Transform target = TargetTransform;
+                Vector3 newScale = target.localScale + (Vector3.one * delta * zoomSpeed);
+                target.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
             });
         }
 
@@ -125,26 +173,40 @@ namespace HoloMedAI.Gestures
             _executionQueue.Enqueue(() =>
             {
                 Debug.Log($"[HoloMed] Moving Heart dx:{dx} dy:{dy}");
-                transform.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
+                TargetTransform.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
             });
         }
 
         /// <summary>
-        /// Alias for Move to match standard naming.
+        /// Aliases for Move to match standard naming.
         /// </summary>
         public void MoveModel(float dx, float dy) => Move(dx, dy);
+        public void Pan(float dx, float dy) => Move(dx, dy);
 
         /// <summary>
         /// Rotation:
-        /// Applies continuous rotation around World Y (horizontal) and World X (vertical).
+        /// Uses ModelRotator (Quaternion.Slerp with soft-knee deadzone) when available,
+        /// falling back gracefully to TargetTransform.Rotate in World Space.
         /// </summary>
         public void Rotate(float dx, float dy)
         {
             _executionQueue.Enqueue(() =>
             {
-                Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
-                transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
-                transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                if (modelRotator == null)
+                {
+                    modelRotator = GetComponent<ModelRotator>() ?? (TargetTransform != null ? TargetTransform.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+                }
+
+                if (modelRotator != null)
+                {
+                    modelRotator.Rotate(dx, dy);
+                }
+                else
+                {
+                    Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+                    TargetTransform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                    TargetTransform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                }
             });
         }
 
@@ -154,16 +216,35 @@ namespace HoloMedAI.Gestures
         public void RotateModel(float dx, float dy) => Rotate(dx, dy);
 
         /// <summary>
-        /// Resets the transform back to its initial spawn state.
+        /// Resets the transform back to default state: (0, -0.5f, 0), Quaternion.identity, and Vector3.one.
         /// </summary>
         public void ResetTransform()
         {
             _executionQueue.Enqueue(() =>
             {
-                transform.localPosition = initialPosition;
-                transform.localRotation = initialRotation;
-                transform.localScale = initialScale;
-                Debug.Log("[HoloMed] Reset Heart transform to initial state.");
+                if (modelRotator == null)
+                {
+                    modelRotator = GetComponent<ModelRotator>() ?? (TargetTransform != null ? TargetTransform.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+                }
+
+                if (modelRotator != null)
+                {
+                    modelRotator.ResetRotation();
+                }
+
+                Transform target = TargetTransform;
+                target.localPosition = new Vector3(0f, -0.5f, 0f);
+                target.localRotation = Quaternion.identity;
+                target.localScale = Vector3.one;
+
+                transform.localPosition = new Vector3(0f, -0.5f, 0f);
+                transform.localRotation = Quaternion.identity;
+                transform.localScale = Vector3.one;
+
+                initialPosition = new Vector3(0f, -0.5f, 0f);
+                initialRotation = Quaternion.identity;
+                initialScale = Vector3.one;
+                Debug.Log("[HoloMed] Reset Heart transform to default (0, -0.5, 0).");
             });
         }
     }

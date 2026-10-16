@@ -3,6 +3,17 @@ using UnityEngine;
 
 namespace HoloMedAI.Gestures
 {
+    /// <summary>
+    /// HoloMed AI - Category 1: Centralized Gesture Command Router
+    /// File: GestureCommandRouter.cs
+    /// 
+    /// Validates confidence, command types, and routes validated actions to specific subsystems:
+    /// - SELECT_STRUCTURE        -> IAnatomySelectionController
+    /// - PINCH_START/HOLD/RELEASE -> IGestureStateManager
+    /// - ROTATE_MODEL            -> IModelManipulationController (gated by pinch state)
+    /// - ZOOM_MODEL              -> IModelManipulationController
+    /// - NAVIGATE                -> INavigationController
+    /// </summary>
     public class GestureCommandRouter
     {
         private readonly IAnatomySelectionController anatomyController;
@@ -52,6 +63,7 @@ namespace HoloMedAI.Gestures
                 return;
             }
 
+            // Confidence validation
             if (command.confidence < minimumConfidence)
             {
                 Log(GestureLogLevel.DEBUG, $"[Router] Rejected command '{command.command}' due to low confidence ({command.confidence:F2} < {minimumConfidence:F2}).");
@@ -63,6 +75,9 @@ namespace HoloMedAI.Gestures
 
             switch (cmdType)
             {
+                // -------------------------------------------------------------
+                // 1. SELECT_STRUCTURE (Point Gesture)
+                // -------------------------------------------------------------
                 case "SELECT_STRUCTURE":
                 case "SELECT":
                 case "POINT":
@@ -80,6 +95,9 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                // -------------------------------------------------------------
+                // 2. PINCH STATE MACHINE (Pinch Start / Hold / Release)
+                // -------------------------------------------------------------
                 case "PINCH_START":
                 {
                     Log(GestureLogLevel.DEBUG, "[Router] PINCH_START -> Active manipulation initiated.");
@@ -103,6 +121,9 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                // -------------------------------------------------------------
+                // 3. ROTATE_MODEL (Pinch + Move or continuous rotation stream)
+                // -------------------------------------------------------------
                 case "SYS.INPUT.INTERACT":
                 case "SYS.INPUT.ROTATE":
                 case "INTERACT":
@@ -122,20 +143,33 @@ namespace HoloMedAI.Gestures
                     if (cmdType == "ROTATE_WRIST_CW" || cmdType == "TWO_HAND_ROTATE_CW") dx = -0.05f;
                     else if (cmdType == "ROTATE_WRIST_CCW" || cmdType == "TWO_HAND_ROTATE_CCW") dx = 0.05f;
 
+                    // Target the GameObject named exactly "Heart" if present
                     GameObject heart = GameObject.Find("Heart");
                     if (heart != null)
                     {
-                        float speed = 1.0f;
-                        heart.transform.Rotate(Vector3.up, -dx * speed, Space.World);
-                        heart.transform.Rotate(Vector3.right, dy * speed, Space.World);
+                        ModelRotator rotator = heart.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+                        if (rotator != null)
+                        {
+                            rotator.Rotate(dx, dy);
+                        }
+                        else
+                        {
+                            float speed = 1.0f;
+                            heart.transform.Rotate(Vector3.up, -dx * speed, Space.World);
+                            heart.transform.Rotate(Vector3.right, dy * speed, Space.World);
+                        }
                     }
                     else
                     {
+                        // Direct model rotation applied immediately based on hand movement delta
                         manipulationController?.RotateModel(dx, dy);
                     }
                     break;
                 }
 
+                // -------------------------------------------------------------
+                // 4. ZOOM_MODEL (Two-Finger Zoom / Scale Delta)
+                // -------------------------------------------------------------
                 case "ZOOM_MODEL":
                 case "ZOOM":
                 case "TWO-HAND ZOOM":
@@ -172,6 +206,9 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                // -------------------------------------------------------------
+                // 4.5. MOVE_MODEL / PAN / TRANSLATION
+                // -------------------------------------------------------------
                 case "MOVE":
                 case "PAN":
                 case "TRANSLATE":
@@ -184,6 +221,9 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                // -------------------------------------------------------------
+                // 5. NAVIGATE (Swipe Left / Right)
+                // -------------------------------------------------------------
                 case "NAVIGATE":
                 case "SWIPE":
                 case "SWIPE_LEFT":
@@ -213,11 +253,97 @@ namespace HoloMedAI.Gestures
                     break;
                 }
 
+                // -------------------------------------------------------------
+                // Phase 2: Exploded View
+                // -------------------------------------------------------------
+                case "EXPLODE":
+                case "EXPLODED_VIEW":
+                case "LAYER_EXPAND":
+                case "SEPARATE_LAYERS":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] EXPLODE command received.");
+                    ExplodedViewController.Instance?.Explode();
+                    break;
+                }
+
+                case "COLLAPSE":
+                case "COLLAPSE_VIEW":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] COLLAPSE command received.");
+                    ExplodedViewController.Instance?.Collapse();
+                    break;
+                }
+
+                // -------------------------------------------------------------
+                // Phase 3: Virtual Slicing & Dissection
+                // -------------------------------------------------------------
+                case "SLICE":
+                case "SLICING":
+                case "CUT":
+                case "SECTION":
+                case "SECTION_VIEW":
+                case "CROSS_SECTION":
+                case "DISSECT":
+                case "SLICE_DEPTH":
+                {
+                    float depth = command.payload != null ? command.payload.value : command.value;
+                    Log(GestureLogLevel.INFO, $"[Router] SLICE command received (Depth delta: {depth:F4}).");
+                    if (Mathf.Abs(depth) > 0.0001f)
+                    {
+                        VirtualSlicingController.Instance?.ApplyDepthDelta(depth);
+                    }
+                    else
+                    {
+                        VirtualSlicingController.Instance?.CommitIncision();
+                    }
+                    break;
+                }
+
+                case "SLICE_CORONAL":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] SLICE_CORONAL command received.");
+                    VirtualSlicingController.Instance?.SetOrientation(VirtualSlicingController.SliceOrientation.Coronal);
+                    break;
+                }
+
+                case "SLICE_SAGITTAL":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] SLICE_SAGITTAL command received.");
+                    VirtualSlicingController.Instance?.SetOrientation(VirtualSlicingController.SliceOrientation.Sagittal);
+                    break;
+                }
+
+                case "SLICE_AXIAL":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] SLICE_AXIAL command received.");
+                    VirtualSlicingController.Instance?.SetOrientation(VirtualSlicingController.SliceOrientation.Axial);
+                    break;
+                }
+
+                case "INVERT_SLICE":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] INVERT_SLICE command received.");
+                    VirtualSlicingController.Instance?.InvertSliceNormal();
+                    break;
+                }
+
+                case "RESET_SLICE":
+                {
+                    Log(GestureLogLevel.INFO, "[Router] RESET_SLICE command received.");
+                    VirtualSlicingController.Instance?.ResetSlicing();
+                    break;
+                }
+
+                // -------------------------------------------------------------
+                // System & Safety Commands
+                // -------------------------------------------------------------
                 case "RESET":
                 {
                     Log(GestureLogLevel.INFO, "[Router] RESET command received (R key) -> Resetting transform & state.");
                     manipulationController?.ResetTransform();
                     anatomyController?.ClearSelection();
+                    ExplodedViewController.Instance?.ResetAll();
+                    VirtualSlicingController.Instance?.ResetSlicing();
                     stateManager?.ResetState();
                     appStateManager?.UpdateInteractionState(InteractionState.IDLE);
                     break;

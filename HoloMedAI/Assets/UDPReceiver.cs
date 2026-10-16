@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using UnityEngine;
+using HoloMedAI.Gestures;
 
 /// <summary>
 /// HoloMed AI - Thread-Safe UDP Receiver for Unity 3D
@@ -163,9 +164,17 @@ public class UDPReceiver : MonoBehaviour
                 GameObject heart = GameObject.Find("Heart");
                 if (heart != null)
                 {
-                    Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
-                    heart.transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
-                    heart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                    ModelRotator rotator = heart.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+                    if (rotator != null)
+                    {
+                        rotator.Rotate(dx, dy);
+                    }
+                    else
+                    {
+                        Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+                        heart.transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                        heart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                    }
                 }
             }
             else if (actionType.Equals("ZOOM", StringComparison.OrdinalIgnoreCase) ||

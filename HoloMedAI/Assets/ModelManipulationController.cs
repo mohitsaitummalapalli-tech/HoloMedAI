@@ -140,6 +140,13 @@ namespace HoloMedAI.Gestures
         {
             if (targetModel == null) return;
 
+            ModelRotator rotator = targetModel.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+            if (rotator != null)
+            {
+                rotator.Rotate(dx, dy);
+                return;
+            }
+
             // 1. Sanitize against NaN, Infinity, and malformed extreme values
             if (float.IsNaN(dx) || float.IsInfinity(dx)) dx = 0f;
             if (float.IsNaN(dy) || float.IsInfinity(dy)) dy = 0f;

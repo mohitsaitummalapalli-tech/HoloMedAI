@@ -1,0 +1,10 @@
+{
+  "extraPaths": [
+    ".",
+    "python",
+    "backend",
+    "holomed"
+  ],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}

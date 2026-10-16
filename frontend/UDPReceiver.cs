@@ -5,9 +5,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using UnityEngine;
+using HoloMedAI.Gestures;
 
 /// <summary>
-/// HoloMed AI - Thread-Safe UDP Receiver for Unity 3D (Frontend Mirror)
+/// HoloMed AI - Thread-Safe UDP Receiver for Unity 3D
 /// Listens for JSON packets streamed from Python modules and dispatches them on the Unity Main Thread.
 /// </summary>
 public class UDPReceiver : MonoBehaviour
@@ -163,11 +164,17 @@ public class UDPReceiver : MonoBehaviour
                 GameObject heart = GameObject.Find("Heart");
                 if (heart != null)
                 {
-                    // 4. Debug Logs inside the Update loop right before rotation
-                    Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
-
-                    heart.transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
-                    heart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                    ModelRotator rotator = heart.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+                    if (rotator != null)
+                    {
+                        rotator.Rotate(dx, dy);
+                    }
+                    else
+                    {
+                        Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+                        heart.transform.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                        heart.transform.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                    }
                 }
             }
             else if (actionType.Equals("ZOOM", StringComparison.OrdinalIgnoreCase) ||

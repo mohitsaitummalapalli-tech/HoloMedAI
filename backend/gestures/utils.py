@@ -353,8 +353,16 @@ class GestureStateMachine:
     Eliminates tracking flicker, transitional jitter, and erratic mode switching.
     """
 
-    def __init__(self, stability_threshold: int = 5, initial_state: str = "IDLE"):
+    def __init__(
+        self,
+        stability_threshold: int = 5,
+        initial_state: str = "IDLE",
+        state_thresholds: Optional[Dict[str, int]] = None,
+        release_thresholds: Optional[Dict[str, int]] = None,
+    ):
         self.stability_threshold = stability_threshold
+        self.state_thresholds: Dict[str, int] = state_thresholds or {}
+        self.release_thresholds: Dict[str, int] = release_thresholds or {}
         self.current_state: str = initial_state
         self.candidate_state: str = initial_state
         self.candidate_frame_count: int = 0
@@ -364,7 +372,7 @@ class GestureStateMachine:
         """
         Receives the raw candidate gesture detected in the current frame.
         Transitions current_state to candidate_state only after candidate_state
-        persists for at least stability_threshold consecutive frames.
+        persists for at least stability_threshold (or per-state threshold) consecutive frames.
         Returns the confirmed active gesture state.
         """
         if detected_state == self.current_state:
@@ -374,7 +382,13 @@ class GestureStateMachine:
 
         if detected_state == self.candidate_state:
             self.candidate_frame_count += 1
-            if self.candidate_frame_count >= self.stability_threshold:
+            # Check per-state threshold or default stability_threshold
+            required_frames = self.state_thresholds.get(self.candidate_state, self.stability_threshold)
+            # If transitioning to IDLE from an active gesture with release threshold, use release_threshold
+            if self.candidate_state == "IDLE" and self.current_state in self.release_thresholds:
+                required_frames = self.release_thresholds[self.current_state]
+
+            if self.candidate_frame_count >= required_frames:
                 prev = self.current_state
                 self.current_state = self.candidate_state
                 self.candidate_frame_count = 0

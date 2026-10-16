@@ -104,6 +104,27 @@ public static class OneClickHeartSetup
         heartRoot.transform.localScale = Vector3.one;
         Undo.RegisterCreatedObjectUndo(heartRoot, "Create Heart Root");
 
+        ModelImporter modelImporter = AssetImporter.GetAtPath(ModelPath) as ModelImporter;
+        if (modelImporter != null)
+        {
+            bool needReimport = false;
+            if (!modelImporter.isReadable)
+            {
+                modelImporter.isReadable = true;
+                needReimport = true;
+            }
+            if (modelImporter.indexFormat != ModelImporterIndexFormat.UInt32)
+            {
+                modelImporter.indexFormat = ModelImporterIndexFormat.UInt32;
+                needReimport = true;
+            }
+            if (needReimport)
+            {
+                modelImporter.SaveAndReimport();
+                Debug.Log($"[OneClickHeartSetup] Configured ModelImporter for '{ModelPath}': isReadable = true, indexFormat = UInt32.");
+            }
+        }
+
         GameObject heartAsset = AssetDatabase.LoadAssetAtPath<GameObject>(ModelPath);
         if (heartAsset == null)
         {
@@ -227,12 +248,40 @@ public static class OneClickHeartSetup
             Undo.RegisterCreatedObjectUndo(modelManipulator, "Add ModelManipulator");
         }
 
+        ModelRotator modelRotator = heartRoot.GetComponent<ModelRotator>();
+        if (modelRotator == null)
+        {
+            modelRotator = heartRoot.AddComponent<ModelRotator>();
+            Undo.RegisterCreatedObjectUndo(modelRotator, "Add ModelRotator");
+        }
+        modelRotator.TargetModel = heartRoot.transform;
+        EditorUtility.SetDirty(modelRotator);
+
         OrganSlicer organSlicer = heartRoot.GetComponent<OrganSlicer>();
         if (organSlicer == null)
         {
             organSlicer = heartRoot.AddComponent<OrganSlicer>();
             Undo.RegisterCreatedObjectUndo(organSlicer, "Add OrganSlicer");
         }
+
+        ExplodedViewController explodedViewController = heartRoot.GetComponent<ExplodedViewController>();
+        if (explodedViewController == null)
+        {
+            explodedViewController = heartRoot.AddComponent<ExplodedViewController>();
+            Undo.RegisterCreatedObjectUndo(explodedViewController, "Add ExplodedViewController");
+        }
+        explodedViewController.TargetModel = heartRoot.transform;
+        EditorUtility.SetDirty(explodedViewController);
+
+        VirtualSlicingController virtualSlicingController = heartRoot.GetComponent<VirtualSlicingController>();
+        if (virtualSlicingController == null)
+        {
+            virtualSlicingController = heartRoot.AddComponent<VirtualSlicingController>();
+            Undo.RegisterCreatedObjectUndo(virtualSlicingController, "Add VirtualSlicingController");
+        }
+        virtualSlicingController.TargetModel = heartRoot.transform;
+        virtualSlicingController.ResolveReferences();
+        EditorUtility.SetDirty(virtualSlicingController);
 
         // Programmatically spawn an invisible "SlicePlane" GameObject
         GameObject slicePlaneObj = new GameObject("SlicePlane");
@@ -322,13 +371,19 @@ public static class OneClickHeartSetup
         }
         Debug.Log("[OneClickHeartSetup] Destroyed MouseRotator and disabled HologramController components.");
 
-        // ── 8. Enable GestureReceiver, ModelManipulator, and OrganSlicer ──
+        // ── 8. Enable GestureReceiver, ModelRotator, ModelManipulator, OrganSlicer, and Phase 2/3 Controllers ──
         gestureReceiver.enabled = true;
+        modelRotator.enabled = true;
         modelManipulator.enabled = true;
         organSlicer.enabled = true;
+        explodedViewController.enabled = true;
+        virtualSlicingController.enabled = true;
         EditorUtility.SetDirty(gestureReceiver);
+        EditorUtility.SetDirty(modelRotator);
         EditorUtility.SetDirty(modelManipulator);
         EditorUtility.SetDirty(organSlicer);
+        EditorUtility.SetDirty(explodedViewController);
+        EditorUtility.SetDirty(virtualSlicingController);
 
         // ── 9. Enable VoiceCommandReceiver & Wire ULTRON Nervous System ──
         voiceReceiver.enabled = true;
@@ -340,13 +395,20 @@ public static class OneClickHeartSetup
             UnityEventTools.RemovePersistentListener(voiceReceiver.OnResetModel, 0);
 
         UnityEventTools.AddPersistentListener(voiceReceiver.OnResetModel, modelManipulator.ResetTransform);
+        UnityEventTools.AddPersistentListener(voiceReceiver.OnResetModel, modelRotator.ResetRotation);
+        UnityEventTools.AddPersistentListener(voiceReceiver.OnResetModel, explodedViewController.ResetAll);
+        UnityEventTools.AddPersistentListener(voiceReceiver.OnResetModel, virtualSlicingController.ResetSlicing);
         voiceReceiver.OnResetModel.AddListener(modelManipulator.ResetTransform);
+        voiceReceiver.OnResetModel.AddListener(modelRotator.ResetRotation);
+        voiceReceiver.OnResetModel.AddListener(explodedViewController.ResetAll);
+        voiceReceiver.OnResetModel.AddListener(virtualSlicingController.ResetSlicing);
 
         EditorUtility.SetDirty(voiceReceiver);
-        Debug.Log("[OneClickHeartSetup] Enabled VoiceCommandReceiver on Port 5053 and wired OnResetModel to ModelManipulator.ResetTransform.");
+        Debug.Log("[OneClickHeartSetup] Enabled VoiceCommandReceiver on Port 5053 and wired OnResetModel across all subsystem controllers.");
 
         // ── 10. Wire GestureReceiver UnityEvents directly ─────────────────
         modelManipulator.TargetTransform = heartRoot.transform;
+        modelManipulator.Rotator = modelRotator;
         EditorUtility.SetDirty(modelManipulator);
 
         while (gestureReceiver.OnRotateEvent.GetPersistentEventCount() > 0)
@@ -360,8 +422,8 @@ public static class OneClickHeartSetup
         while (gestureReceiver.OnPinchEvent.GetPersistentEventCount() > 0)
             UnityEventTools.RemovePersistentListener(gestureReceiver.OnPinchEvent, 0);
 
-        // Wire UnityEvents directly to ModelManipulator and OrganSlicer
-        UnityEventTools.AddPersistentListener<float, float>(gestureReceiver.OnRotateEvent, modelManipulator.Rotate);
+        // Wire UnityEvents directly to ModelRotator (Slerp smoothing), ModelManipulator, and OrganSlicer
+        UnityEventTools.AddPersistentListener<float, float>(gestureReceiver.OnRotateEvent, modelRotator.Rotate);
         UnityEventTools.AddPersistentListener<float>(gestureReceiver.OnZoomEvent, modelManipulator.Zoom);
         UnityEventTools.AddPersistentListener<float, float>(gestureReceiver.OnPanEvent, modelManipulator.Move);
         UnityEventTools.AddPersistentListener(gestureReceiver.OnSliceEvent, organSlicer.ToggleSlice);
@@ -370,10 +432,11 @@ public static class OneClickHeartSetup
         // Wire runtime delegates and component references
         gestureReceiver.Manipulator = modelManipulator;
         gestureReceiver.Slicer = organSlicer;
-        gestureReceiver.WireCategory1Pipeline(modelManipulator, organSlicer);
+        gestureReceiver.Rotator = modelRotator;
+        gestureReceiver.WireCategory1Pipeline(modelManipulator, organSlicer, modelRotator);
 
         EditorUtility.SetDirty(gestureReceiver);
-        Debug.Log("[OneClickHeartSetup] Wired GestureReceiver UnityEvents to ModelManipulator (Rotate, Zoom, Move) and OrganSlicer (ToggleSlice, ExecuteSlice).");
+        Debug.Log("[OneClickHeartSetup] Wired GestureReceiver UnityEvents to ModelRotator (Slerp Rotate), ModelManipulator (Zoom, Move) and OrganSlicer (ToggleSlice, ExecuteSlice).");
 
         // ── 11. Configure the Main Camera ──────────────────────────────────
         GameObject mainCameraObj = GameObject.Find("Main Camera");

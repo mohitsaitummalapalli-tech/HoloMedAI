@@ -3,6 +3,19 @@ using UnityEngine;
 
 namespace HoloMedAI.Gestures
 {
+    /// <summary>
+    /// HoloMed AI - Category 1: Direct 3D Model Manipulation Controller
+    /// File: ModelManipulationController.cs
+    /// 
+    /// Direct Hand-Controlled Rotation (NO Auto-Spin, NO Momentum, NO Artificial 360° Limits):
+    /// - Rotation amount and direction directly driven by user hand movement delta (dx, dy).
+    /// - Hand stationary -> Model stationary (zero rotation).
+    /// - Hand moves -> Model rotates by delta * sensitivity.
+    /// - Hand stops -> Model stops rotating immediately.
+    /// - Cumulative continuous rotation: 45°, 180°, 360°, 720° without artificial clamping.
+    /// - Configurable dead-zone, sensitivity, and axis inversion in Unity Inspector.
+    /// - Relative two-finger zoom with min/max scale clamping and dead-zone.
+    /// </summary>
     public class ModelManipulationController : MonoBehaviour, IModelManipulationController
     {
         [Header("Target Hologram")]
@@ -58,10 +71,12 @@ namespace HoloMedAI.Gestures
         [Tooltip("Translation sensitivity multiplier for hand move / pan")]
         [SerializeField] private float moveSpeed = 1.0f;
 
+        // Baseline Reference Coordinates
         private Vector3 initialPosition;
         private Quaternion initialRotation;
         private Vector3 initialScale;
 
+        // Filtered Delta State
         private float currentFilteredDx = 0f;
         private float currentFilteredDy = 0f;
 
@@ -116,16 +131,30 @@ namespace HoloMedAI.Gestures
             initialScale = targetModel.localScale;
         }
 
+        /// <summary>
+        /// Applies direct relative rotation to targetModel based on user hand movement delta.
+        /// Rotates ONLY when hand moves. Zero rotation when hand is stationary.
+        /// NO automatic spin, NO momentum drift.
+        /// </summary>
         public void RotateModel(float dx, float dy)
         {
             if (targetModel == null) return;
 
+            ModelRotator rotator = targetModel.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+            if (rotator != null)
+            {
+                rotator.Rotate(dx, dy);
+                return;
+            }
+
+            // 1. Sanitize against NaN, Infinity, and malformed extreme values
             if (float.IsNaN(dx) || float.IsInfinity(dx)) dx = 0f;
             if (float.IsNaN(dy) || float.IsInfinity(dy)) dy = 0f;
 
             dx = Mathf.Clamp(dx, -maxRotationDeltaPerPacket, maxRotationDeltaPerPacket);
             dy = Mathf.Clamp(dy, -maxRotationDeltaPerPacket, maxRotationDeltaPerPacket);
 
+            // 2. Apply Euclidean Dead-Zone threshold (suppresses minor hand tremor at rest with zero delta)
             float euclideanDist = Mathf.Sqrt(dx * dx + dy * dy);
             if (euclideanDist < rotationDeadZone)
             {
@@ -137,6 +166,7 @@ namespace HoloMedAI.Gestures
             if (Mathf.Abs(dx) < rotationDeadZone) dx = 0f;
             if (Mathf.Abs(dy) < rotationDeadZone) dy = 0f;
 
+            // Hand stationary -> early exit (zero rotation)
             if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
             {
                 currentFilteredDx = 0f;
@@ -144,6 +174,7 @@ namespace HoloMedAI.Gestures
                 return;
             }
 
+            // 3. Optional Delta Filter (filters input noise without momentum/drift)
             float finalDx = dx;
             float finalDy = dy;
             if (enableDeltaSmoothing)
@@ -155,30 +186,44 @@ namespace HoloMedAI.Gestures
                 finalDy = currentFilteredDy;
             }
 
+            // 4. Inversion mapping
             float effectiveDx = invertHorizontal ? -finalDx : finalDx;
             float effectiveDy = invertVertical ? -finalDy : finalDy;
 
+            // 5. Compute rotation delta degrees
+            // Horizontal hand movement (dx) rotates around World Y axis
+            // Vertical hand movement (dy) rotates around World X axis
             float rotY = -effectiveDx * rotationSensitivity;
             float rotX = effectiveDy * rotationSensitivity;
 
+            // 6. Direct Relative Rotation (accumulates continuously to 45°, 180°, 360°, 720°, etc.)
             targetModel.Rotate(Vector3.up, rotY, Space.World);
             targetModel.Rotate(Vector3.right, rotX, Space.World);
         }
 
+        /// <summary>
+        /// Smoothly modifies targetModel local scale based on relative two-finger distance delta.
+        /// </summary>
         public void ZoomModel(float distanceDelta)
         {
             if (targetModel == null) return;
 
+            // 1. Sanitize against NaN, Infinity, and extreme values
             if (float.IsNaN(distanceDelta) || float.IsInfinity(distanceDelta)) return;
 
             distanceDelta = Mathf.Clamp(distanceDelta, -maxZoomDeltaPerPacket, maxZoomDeltaPerPacket);
 
+            // 2. Apply Dead-Zone threshold
             if (Mathf.Abs(distanceDelta) < zoomDeadZone) return;
 
+            // 3. Compute relative scale delta and clamp within safe limits (Vector3.Max/Min)
             Vector3 newScale = targetModel.localScale + (Vector3.one * distanceDelta * zoomSensitivity);
             targetModel.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
         }
 
+        /// <summary>
+        /// Applies direct translation (Move/Pan) to targetModel based on user hand movement delta.
+        /// </summary>
         public void MoveModel(float dx, float dy)
         {
             if (targetModel == null) return;
@@ -188,6 +233,9 @@ namespace HoloMedAI.Gestures
             targetModel.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
         }
 
+        /// <summary>
+        /// Clears manipulation delta and stops rotation immediately (called on PINCH_RELEASE).
+        /// </summary>
         public void StopRotation()
         {
             currentFilteredDx = 0f;

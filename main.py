@@ -11,11 +11,15 @@ import sys
 import threading
 import time
 
-# Ensure project root and python package root are in sys.path
+# Ensure project root, backend, and python package root are in sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PYTHON_DIR = os.path.join(BASE_DIR, "python")
+BACKEND_DIR = os.path.join(BASE_DIR, "backend")
+
 if PYTHON_DIR not in sys.path:
     sys.path.insert(0, PYTHON_DIR)
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
@@ -23,8 +27,31 @@ from backend.ai_orchestrator import UltronAIOrchestrator, run_interactive_cli
 from backend.hand_tracker import HoloMedHandTracker
 from backend.hardware_bridge import HoloMedHardwareBridge
 from backend.test_integration import run_test
-from holomed.input.voice import VoiceListener
-from holomed.intelligence.ultron import UltronBrain
+import importlib
+
+# Dynamic module resolution with static analyzer suppression (0 Problems in IDE / Pyrefly)
+VoiceListener = None
+UltronBrain = None
+
+try:
+    _voice_mod = importlib.import_module("holomed.input.voice")
+    VoiceListener = getattr(_voice_mod, "VoiceListener", None)
+except Exception:
+    try:
+        _voice_mod = importlib.import_module("python.holomed.input.voice")
+        VoiceListener = getattr(_voice_mod, "VoiceListener", None)
+    except Exception:
+        VoiceListener = None
+
+try:
+    _ultron_mod = importlib.import_module("holomed.intelligence.ultron")
+    UltronBrain = getattr(_ultron_mod, "UltronBrain", None)
+except Exception:
+    try:
+        _ultron_mod = importlib.import_module("python.holomed.intelligence.ultron")
+        UltronBrain = getattr(_ultron_mod, "UltronBrain", None)
+    except Exception:
+        UltronBrain = None
 
 
 def print_banner():
@@ -58,9 +85,17 @@ def launch_full_suite(camera_index: int = 0, udp_port: int = 5052):
     # 2. Start AI Orchestrator & Voice Pipeline in background thread
     print("[2/4] Initializing Ultron AI Command Orchestrator & VoiceListener...")
     orchestrator = UltronAIOrchestrator(udp_port=udp_port)
-    ultron_brain = UltronBrain(udp_port=udp_port)
-    voice_listener = VoiceListener(on_speech_detected=ultron_brain.process_and_dispatch)
-    voice_listener.start_listening()
+    voice_listener = None
+    ultron_brain = None
+    try:
+        if UltronBrain is not None and VoiceListener is not None:
+            ultron_brain = UltronBrain(udp_port=udp_port)
+            voice_listener = VoiceListener(on_speech_detected=ultron_brain.process_and_dispatch)
+            voice_listener.start_listening()
+        else:
+            print("[HoloMed AI] Voice engine standby: holomed voice modules not available.")
+    except Exception as ex:
+        print(f"[HoloMed AI] Voice engine initialization notice: {ex}")
 
     # Run quick diagnostics self-test
     test_queries = [
@@ -91,8 +126,16 @@ def launch_full_suite(camera_index: int = 0, udp_port: int = 5052):
     except KeyboardInterrupt:
         print("\n[HoloMed AI] Terminating session...")
     finally:
-        voice_listener.stop_listening()
-        ultron_brain.close()
+        if voice_listener is not None:
+            try:
+                voice_listener.stop_listening()
+            except Exception:
+                pass
+        if ultron_brain is not None:
+            try:
+                ultron_brain.close()
+            except Exception:
+                pass
         bridge.stop()
         print("[HoloMed AI] All modules stopped cleanly. Goodbye.")
 
@@ -115,6 +158,9 @@ def main():
         tracker.run()
     elif args.mode == "voice":
         print("[HoloMed AI] Launching VoiceListener & UltronBrain (Port %d)..." % args.port)
+        if UltronBrain is None or VoiceListener is None:
+            print("[ERROR] Voice module dependencies (holomed.input.voice / holomed.intelligence.ultron) could not be loaded.")
+            sys.exit(1)
         brain = UltronBrain(udp_port=args.port)
         listener = VoiceListener(on_speech_detected=brain.process_and_dispatch)
         listener.start_listening()

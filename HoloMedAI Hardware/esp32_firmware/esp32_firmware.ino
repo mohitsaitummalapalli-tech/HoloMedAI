@@ -12,7 +12,10 @@
  * Serial Baud: 115200
  */
 
+#include <Arduino.h>
+
 #define TRIG_PIN 5
+
 #define ECHO_PIN 18
 #define BTN_RESET_PIN 19
 #define BTN_SECTION_PIN 21

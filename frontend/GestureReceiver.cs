@@ -8,6 +8,22 @@ using UnityEngine;
 
 namespace HoloMedAI.Gestures
 {
+    /// <summary>
+    /// HoloMed AI - Category 2: Gesture Subsystem & Command Bus
+    /// File: GestureReceiver.cs
+    /// 
+    /// Architecture:
+    /// External Computer Vision / MediaPipe Engine (Outside Unity):
+    ///   Camera -> Landmark Detection -> Gesture Classification -> JSON Generation -> UDP (Port 5052)
+    /// 
+    /// Unity GestureReceiver (Inside Unity):
+    ///   UDP Reception -> JSON Deserialization -> Validation -> Main-Thread Queue -> Command Router -> Subsystems
+    [System.Serializable]
+    public class GestureVector2Event : UnityEngine.Events.UnityEvent<float, float> { }
+
+    [System.Serializable]
+    public class GestureFloatEvent : UnityEngine.Events.UnityEvent<float> { }
+
     [DisallowMultipleComponent]
     public class GestureReceiver : MonoBehaviour
     {
@@ -49,6 +65,88 @@ namespace HoloMedAI.Gestures
         [SerializeField] private GestureStateManager stateManager;
         [SerializeField] private ApplicationStateManager applicationStateManager;
 
+        [Header("Category 1 Gesture Pipeline UnityEvents")]
+        [SerializeField] private GestureVector2Event onRotate = new GestureVector2Event();
+        [SerializeField] private GestureFloatEvent onZoom = new GestureFloatEvent();
+        [SerializeField] private GestureVector2Event onPan = new GestureVector2Event();
+        [SerializeField] private UnityEngine.Events.UnityEvent onSlice = new UnityEngine.Events.UnityEvent();
+        [SerializeField] private UnityEngine.Events.UnityEvent onPinch = new UnityEngine.Events.UnityEvent();
+
+        public GestureVector2Event OnRotateEvent => onRotate;
+        public GestureFloatEvent OnZoomEvent => onZoom;
+        public GestureVector2Event OnPanEvent => onPan;
+        public UnityEngine.Events.UnityEvent OnSliceEvent => onSlice;
+        public UnityEngine.Events.UnityEvent OnPinchEvent => onPinch;
+
+        // C# Action delegates
+        public Action<float, float> OnRotate;
+        public Action<float> OnZoom;
+        public Action<float, float> OnPan;
+        public Action OnSlice;
+        public Action OnPinch;
+
+        [Header("Category 1 Direct Component References")]
+        [SerializeField] private ModelManipulator modelManipulator;
+        [SerializeField] private OrganSlicer organSlicer;
+        [SerializeField] private ModelRotator modelRotator;
+
+        public ModelManipulator Manipulator
+        {
+            get => modelManipulator;
+            set => modelManipulator = value;
+        }
+
+        public OrganSlicer Slicer
+        {
+            get => organSlicer;
+            set => organSlicer = value;
+        }
+
+        public ModelRotator Rotator
+        {
+            get => modelRotator;
+            set => modelRotator = value;
+        }
+
+        public void WireCategory1Pipeline(ModelManipulator manipulator, OrganSlicer slicer, ModelRotator rotator = null)
+        {
+            this.modelManipulator = manipulator;
+            this.organSlicer = slicer;
+            if (rotator != null) this.modelRotator = rotator;
+
+            OnRotate = null;
+            OnZoom = null;
+            OnPan = null;
+            OnSlice = null;
+            OnPinch = null;
+
+            if (this.modelRotator != null)
+            {
+                OnRotate += this.modelRotator.Rotate;
+            }
+            else if (manipulator != null)
+            {
+                OnRotate += manipulator.Rotate;
+            }
+
+            if (manipulator != null)
+            {
+                OnZoom += manipulator.Zoom;
+                OnPan += manipulator.Move;
+            }
+
+            if (slicer != null)
+            {
+                OnSlice += slicer.ToggleSlice;
+                OnPinch += slicer.ExecuteSlice;
+            }
+        }
+
+        public void WireCategory1Pipeline(ModelManipulator manipulator, OrganSlicer slicer)
+        {
+            WireCategory1Pipeline(manipulator, slicer, modelRotator);
+        }
+
         // Thread-Safe Datagram Queue
         private readonly ConcurrentQueue<string> packetQueue = new ConcurrentQueue<string>();
         private Thread udpThread;
@@ -71,6 +169,7 @@ namespace HoloMedAI.Gestures
                 targetModel = heartObj != null ? heartObj.transform : transform;
             }
 
+            // Auto-locate or attach required controllers
             if (manipulationController == null)
             {
                 manipulationController = GetComponent<ModelManipulationController>() ?? gameObject.AddComponent<ModelManipulationController>();
@@ -97,6 +196,22 @@ namespace HoloMedAI.Gestures
                 applicationStateManager = GetComponent<ApplicationStateManager>() ?? gameObject.AddComponent<ApplicationStateManager>();
             }
 
+            // Auto-wire Category 1 components
+            if (modelRotator == null)
+            {
+                modelRotator = GetComponent<ModelRotator>() ?? (targetModel != null ? targetModel.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+            }
+            if (modelManipulator == null)
+            {
+                modelManipulator = GetComponent<ModelManipulator>() ?? (targetModel != null ? targetModel.GetComponent<ModelManipulator>() : null);
+            }
+            if (organSlicer == null)
+            {
+                organSlicer = GetComponent<OrganSlicer>() ?? (targetModel != null ? targetModel.GetComponent<OrganSlicer>() : null);
+            }
+            WireCategory1Pipeline(modelManipulator, organSlicer, modelRotator);
+
+            // Initialize centralized Command Router
             commandRouter = new GestureCommandRouter(
                 anatomyController,
                 manipulationController,
@@ -106,6 +221,23 @@ namespace HoloMedAI.Gestures
                 minimumConfidence,
                 logLevel
             );
+        }
+
+        private void OnEnable()
+        {
+            if (modelRotator == null)
+            {
+                modelRotator = GetComponent<ModelRotator>() ?? (targetModel != null ? targetModel.GetComponent<ModelRotator>() : null) ?? ModelRotator.Instance;
+            }
+            if (modelManipulator == null)
+            {
+                modelManipulator = GetComponent<ModelManipulator>() ?? (targetModel != null ? targetModel.GetComponent<ModelManipulator>() : null);
+            }
+            if (organSlicer == null)
+            {
+                organSlicer = GetComponent<OrganSlicer>() ?? (targetModel != null ? targetModel.GetComponent<OrganSlicer>() : null);
+            }
+            WireCategory1Pipeline(modelManipulator, organSlicer, modelRotator);
         }
 
         private void Start()
@@ -122,6 +254,9 @@ namespace HoloMedAI.Gestures
             }
         }
 
+        /// <summary>
+        /// Starts the background UDP listener thread.
+        /// </summary>
         public void StartUDPListener()
         {
             if (isListening) return;
@@ -148,6 +283,9 @@ namespace HoloMedAI.Gestures
             }
         }
 
+        /// <summary>
+        /// Background worker thread: captures UDP datagrams and enqueues them for main thread execution.
+        /// </summary>
         private void UDPListenWorker()
         {
             IPEndPoint remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
@@ -165,31 +303,55 @@ namespace HoloMedAI.Gestures
                 }
                 catch (SocketException)
                 {
+                    // Socket closed / application stopped
                     break;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    if (isListening)
+                    {
+                        // Safe logging on error
+                    }
                 }
             }
         }
 
+        // Thread-Safe Main Thread Action Queue
         private static readonly ConcurrentQueue<Action> _executionQueue = new ConcurrentQueue<Action>();
 
+        /// <summary>
+        /// Unity Main Thread Update: safely dequeues and deserializes packets, routing them to subsystems.
+        /// </summary>
         private void Update()
         {
             // Reset transform explicitly bound to the 'r' key
             if (Input.GetKeyDown(KeyCode.R))
             {
-                Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
-                target?.GetComponent<ModelManipulator>()?.ResetTransform();
-                manipulationController?.ResetTransform();
+                if (modelManipulator != null)
+                {
+                    modelManipulator.ResetTransform();
+                }
+                else
+                {
+                    Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                    target?.GetComponent<ModelManipulator>()?.ResetTransform();
+                }
             }
 
+            // Execute queued main thread actions
             while (_executionQueue.TryDequeue(out Action action))
             {
-                try { action?.Invoke(); } catch { }
+                try
+                {
+                    action?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Log(GestureLogLevel.ERROR, $"ExecutionQueue error: {ex.Message}");
+                }
             }
 
+            // Process queued packets
             while (packetQueue.TryDequeue(out string rawPayload))
             {
                 if (string.IsNullOrEmpty(rawPayload)) continue;
@@ -203,11 +365,15 @@ namespace HoloMedAI.Gestures
             }
         }
 
+        /// <summary>
+        /// Deserializes JSON safely and submits the command to the router.
+        /// </summary>
         private void ProcessIncomingPayload(string rawJson)
         {
             string trimmed = rawJson.Trim();
             if (!trimmed.StartsWith("{") || !trimmed.EndsWith("}"))
             {
+                // Fallback for simple string commands like "RESET" or "SELECT"
                 CoreGestureCommand plainCmd = new CoreGestureCommand
                 {
                     command = trimmed.ToUpperInvariant(),
@@ -260,17 +426,36 @@ namespace HoloMedAI.Gestures
                 {
                     _executionQueue.Enqueue(() =>
                     {
-                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
-                        if (target != null)
+                        if (modelRotator != null)
                         {
-                            ModelManipulator manip = target.GetComponent<ModelManipulator>();
-                            if (manip != null)
+                            modelRotator.ResetRotation();
+                        }
+
+                        ExplodedViewController.Instance?.ResetAll();
+                        VirtualSlicingController.Instance?.ResetSlicing();
+
+                        if (modelManipulator != null)
+                        {
+                            modelManipulator.ResetTransform();
+                        }
+                        else
+                        {
+                            Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                            if (target != null)
                             {
-                                manip.ResetTransform();
-                            }
-                            else if (manipulationController != null)
-                            {
-                                manipulationController.ResetTransform();
+                                ModelRotator targetRot = target.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+                                if (targetRot != null) targetRot.ResetRotation();
+
+                                ModelManipulator manip = target.GetComponent<ModelManipulator>();
+                                if (manip != null)
+                                {
+                                    manip.ResetTransform();
+                                }
+                                else
+                                {
+                                    ModelManipulationController manipCtrl = target.GetComponent<ModelManipulationController>();
+                                    if (manipCtrl != null) manipCtrl.ResetTransform();
+                                }
                             }
                         }
                     });
@@ -301,12 +486,37 @@ namespace HoloMedAI.Gestures
 
                     _executionQueue.Enqueue(() =>
                     {
-                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
-                        if (target != null)
+                        onRotate?.Invoke(dx, dy);
+                        OnRotate?.Invoke(dx, dy);
+
+                        if (OnRotate == null && (onRotate == null || onRotate.GetPersistentEventCount() == 0))
                         {
-                            Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
-                            target.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
-                            target.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                            if (modelRotator != null)
+                            {
+                                modelRotator.Rotate(dx, dy);
+                            }
+                            else if (modelManipulator != null)
+                            {
+                                modelManipulator.Rotate(dx, dy);
+                            }
+                            else
+                            {
+                                Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                                if (target != null)
+                                {
+                                    ModelRotator targetRot = target.GetComponent<ModelRotator>() ?? ModelRotator.Instance;
+                                    if (targetRot != null)
+                                    {
+                                        targetRot.Rotate(dx, dy);
+                                    }
+                                    else
+                                    {
+                                        Debug.Log($"[HoloMed] Rotating Heart dx:{dx} dy:{dy}");
+                                        target.Rotate(Vector3.up, -dx * rotationSpeed, Space.World);
+                                        target.Rotate(Vector3.right, dy * rotationSpeed, Space.World);
+                                    }
+                                }
+                            }
                         }
                     });
                     return;
@@ -358,12 +568,25 @@ namespace HoloMedAI.Gestures
 
                     _executionQueue.Enqueue(() =>
                     {
-                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
-                        if (target != null)
+                        onZoom?.Invoke(delta);
+                        OnZoom?.Invoke(delta);
+
+                        if (OnZoom == null && (onZoom == null || onZoom.GetPersistentEventCount() == 0))
                         {
-                            Debug.Log($"[HoloMed] Zooming Heart delta:{delta}");
-                            Vector3 newScale = target.localScale + (Vector3.one * delta * zoomSpeed);
-                            target.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+                            if (modelManipulator != null)
+                            {
+                                modelManipulator.Zoom(delta);
+                            }
+                            else
+                            {
+                                Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                                if (target != null)
+                                {
+                                    Debug.Log($"[HoloMed] Zooming Heart delta:{delta}");
+                                    Vector3 newScale = target.localScale + (Vector3.one * delta * zoomSpeed);
+                                    target.localScale = Vector3.Max(Vector3.one * minScale, Vector3.Min(newScale, Vector3.one * maxScale));
+                                }
+                            }
                         }
                     });
                     return;
@@ -385,11 +608,155 @@ namespace HoloMedAI.Gestures
 
                     _executionQueue.Enqueue(() =>
                     {
-                        Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
-                        if (target != null)
+                        onPan?.Invoke(dx, dy);
+                        OnPan?.Invoke(dx, dy);
+
+                        if (OnPan == null && (onPan == null || onPan.GetPersistentEventCount() == 0))
                         {
-                            Debug.Log($"[HoloMed] Moving Heart dx:{dx} dy:{dy}");
-                            target.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
+                            if (modelManipulator != null)
+                            {
+                                modelManipulator.Move(dx, dy);
+                            }
+                            else
+                            {
+                                Transform target = targetModel ?? (GameObject.Find("Heart")?.transform ?? transform);
+                                if (target != null)
+                                {
+                                    Debug.Log($"[HoloMed] Moving Heart dx:{dx} dy:{dy}");
+                                    target.Translate(new Vector3(dx * moveSpeed, -dy * moveSpeed, 0), Space.World);
+                                }
+                            }
+                        }
+                    });
+                    return;
+                }
+
+                // 4. SLICE (Cross-section dissection & depth control)
+                if (cmd.Equals("SLICE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SLICING", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("CUT", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SECTION", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SECTION_VIEW", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("CROSS_SECTION", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("DISSECT", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("TOGGLE_SLICE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SLICE_DEPTH", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("CUT_DEPTH", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SLICE_CORONAL", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SLICE_SAGITTAL", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SLICE_AXIAL", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("INVERT_SLICE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("RESET_SLICE", StringComparison.OrdinalIgnoreCase))
+                {
+                    float depthDelta = 0f;
+                    if (parsedCommand.payload != null)
+                    {
+                        if (parsedCommand.payload.dz != 0f) depthDelta = parsedCommand.payload.dz;
+                        else if (parsedCommand.payload.delta != 0f) depthDelta = parsedCommand.payload.delta;
+                        else if (parsedCommand.payload.value != 0f) depthDelta = parsedCommand.payload.value;
+                    }
+                    if (Mathf.Approximately(depthDelta, 0f))
+                    {
+                        if (parsedCommand.dz != 0f) depthDelta = parsedCommand.dz;
+                        else if (parsedCommand.delta != 0f) depthDelta = parsedCommand.delta;
+                        else if (parsedCommand.value != 0f) depthDelta = parsedCommand.value;
+                    }
+
+                    _executionQueue.Enqueue(() =>
+                    {
+                        Debug.Log($"[HoloMed] Slicing command triggered: {cmd}");
+                        onSlice?.Invoke();
+                        OnSlice?.Invoke();
+
+                        VirtualSlicingController slicingCtrl = VirtualSlicingController.Instance ?? (targetModel != null ? targetModel.GetComponent<VirtualSlicingController>() : null);
+                        if (slicingCtrl != null)
+                        {
+                            if (cmd.Equals("SLICE_CORONAL", StringComparison.OrdinalIgnoreCase))
+                                slicingCtrl.SetOrientation(VirtualSlicingController.SliceOrientation.Coronal);
+                            else if (cmd.Equals("SLICE_SAGITTAL", StringComparison.OrdinalIgnoreCase))
+                                slicingCtrl.SetOrientation(VirtualSlicingController.SliceOrientation.Sagittal);
+                            else if (cmd.Equals("SLICE_AXIAL", StringComparison.OrdinalIgnoreCase))
+                                slicingCtrl.SetOrientation(VirtualSlicingController.SliceOrientation.Axial);
+                            else if (cmd.Equals("INVERT_SLICE", StringComparison.OrdinalIgnoreCase))
+                                slicingCtrl.InvertSliceNormal();
+                            else if (cmd.Equals("RESET_SLICE", StringComparison.OrdinalIgnoreCase))
+                                slicingCtrl.ResetSlicing();
+                            else if (Mathf.Abs(depthDelta) > 0.0001f)
+                                slicingCtrl.ApplyDepthDelta(depthDelta);
+                            else if (cmd.Equals("TOGGLE_SLICE", StringComparison.OrdinalIgnoreCase))
+                                slicingCtrl.ToggleSlice();
+                        }
+
+                        if (organSlicer != null)
+                        {
+                            if (Mathf.Abs(depthDelta) > 0.0001f)
+                            {
+                                organSlicer.UpdateSliceDepth(depthDelta);
+                            }
+                            else if (OnSlice == null && (onSlice == null || onSlice.GetPersistentEventCount() == 0))
+                            {
+                                organSlicer.ToggleSlice();
+                            }
+                        }
+                    });
+                    return;
+                }
+
+                // 5. PINCH (Pinch trigger)
+                if (cmd.Equals("PINCH", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PINCH_TRIGGER", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PINCH_CLICK", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("PINCH_SLICE", StringComparison.OrdinalIgnoreCase))
+                {
+                    _executionQueue.Enqueue(() =>
+                    {
+                        Debug.Log("[HoloMed] Pinch trigger executed");
+                        onPinch?.Invoke();
+                        OnPinch?.Invoke();
+
+                        VirtualSlicingController.Instance?.CommitIncision();
+
+                        if (OnPinch == null && (onPinch == null || onPinch.GetPersistentEventCount() == 0))
+                        {
+                            if (organSlicer != null)
+                            {
+                                organSlicer.ExecuteSlice();
+                            }
+                        }
+                    });
+                    return;
+                }
+
+                // 6. EXPLODE (Phase 2: Exploded Anatomical Layer View)
+                if (cmd.Equals("EXPLODE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("EXPLODED_VIEW", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("LAYER_EXPAND", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("SEPARATE_LAYERS", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("COLLAPSE", StringComparison.OrdinalIgnoreCase) ||
+                    cmd.Equals("COLLAPSE_VIEW", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool shouldCollapse = cmd.StartsWith("COLLAPSE", StringComparison.OrdinalIgnoreCase);
+                    float progress = -1f;
+                    if (parsedCommand.payload != null && parsedCommand.payload.value > 0f) progress = parsedCommand.payload.value;
+                    else if (parsedCommand.value > 0f) progress = parsedCommand.value;
+
+                    _executionQueue.Enqueue(() =>
+                    {
+                        ExplodedViewController explodedCtrl = ExplodedViewController.Instance ?? (targetModel != null ? targetModel.GetComponent<ExplodedViewController>() : null);
+                        if (explodedCtrl != null)
+                        {
+                            if (shouldCollapse)
+                            {
+                                explodedCtrl.Collapse();
+                            }
+                            else if (progress >= 0f)
+                            {
+                                explodedCtrl.SetExplosionProgress(progress);
+                            }
+                            else
+                            {
+                                explodedCtrl.ToggleExplode();
+                            }
                         }
                     });
                     return;

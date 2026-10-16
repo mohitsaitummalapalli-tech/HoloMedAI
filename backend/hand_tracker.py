@@ -183,9 +183,18 @@ class HoloMedHandTracker:
         self.send_interval: float = 0.033  # ~30 Hz UDP send rate
         self._last_timestamp_ms: int = 0
 
-        # Sensitivity & Dead-Zone Parameters
+        # Sensitivity, Dead-Zone & LERP Parameters
         self.rotation_sensitivity: float = 2.5
-        self.rotation_deadzone: float = 0.005  # Euclidean distance dead-zone threshold for hand tremor suppression
+        self.rotation_deadzone: float = 0.0035  # Soft-knee Euclidean dead-zone for micro-tremor suppression
+        self.rot_lerp_alpha: float = 0.45       # Responsive EMA/LERP smoothing coefficient during active motion
+        self.rot_decay_factor: float = 0.75     # Exponential deceleration decay factor when hand stops
+        self.max_rot_delta: float = 0.08        # Maximum per-frame displacement clamp against tracking spikes
+        self.smooth_dx: float = 0.0             # LERP-smoothed X displacement
+        self.smooth_dy: float = 0.0             # LERP-smoothed Y displacement
+
+        self.prev_palm_pos: Optional[Tuple[float, float, float]] = None
+        self.prev_palm_roll: Optional[float] = None
+
         self.pinch_threshold: float = 0.085    # Normalized coordinate distance (thumb-index pinch entry threshold)
         self.pinch_release_threshold: float = 0.12  # Hysteresis release threshold to prevent accidental pinch dropout
         self.zoom_sensitivity: float = 3.0
@@ -199,8 +208,13 @@ class HoloMedHandTracker:
             LandmarkSmoother(alpha=0.60, landmark_alphas={LandmarkIndex.WRIST: 0.65, LandmarkIndex.THUMB_TIP: 0.65, LandmarkIndex.INDEX_FINGER_TIP: 0.65}),
         ]
 
-        # 5-Frame Temporal Stability Threshold Hysteresis State Machine
-        self.state_machine = GestureStateMachine(stability_threshold=5, initial_state="IDLE")
+        # Temporal Stability Hysteresis State Machine: 2-frame fast engagement for ROTATE, 6-frame release buffer
+        self.state_machine = GestureStateMachine(
+            stability_threshold=5,
+            initial_state="IDLE",
+            state_thresholds={"ROTATE": 2, "SLICING": 2},
+            release_thresholds={"ROTATE": 6},
+        )
 
         # Performance Monitoring
         self.fps: float = 0.0
@@ -274,6 +288,10 @@ class HoloMedHandTracker:
         if len(smoothed_hands) > 0 and len(active_hands) == 0:
             self.prev_two_hand_dist = None
             self.prev_hand_pos = None
+            self.prev_palm_pos = None
+            self.prev_palm_roll = None
+            self.smooth_dx = 0.0
+            self.smooth_dy = 0.0
 
             if self.pinch_active:
                 self.send_command({
@@ -338,6 +356,10 @@ class HoloMedHandTracker:
             else:
                 self.prev_two_hand_dist = None
             self.prev_hand_pos = None
+            self.prev_palm_pos = None
+            self.prev_palm_roll = None
+            self.smooth_dx = 0.0
+            self.smooth_dy = 0.0
 
         # Case 2: Exactly One Active Hand Tracking (Fist hand explicitly ignored)
         elif len(active_hands) == 1:
@@ -356,6 +378,12 @@ class HoloMedHandTracker:
                 status_info["pinch"] = single_pinching
 
                 if single_pinching:
+                    # Reset rotation smoother when entering slicing
+                    self.smooth_dx = 0.0
+                    self.smooth_dy = 0.0
+                    self.prev_palm_pos = None
+                    self.prev_palm_roll = None
+
                     # --- Single-Hand Pinch Slice Depth Gesture ---
                     # Use wrist(0)-to-middle_finger_MCP(9) 2D pixel distance as depth proxy.
                     # As the hand moves closer to the camera, this distance increases.
@@ -383,34 +411,105 @@ class HoloMedHandTracker:
                     # Hand stopped pinching -> reset depth tracker
                     self.prev_pinch_depth = None
 
-                    # Calculate Hand Movement Deltas for rotation
-                    current_x = index_mcp.x
-                    current_y = index_mcp.y
-                    dx = 0.0
-                    dy = 0.0
+                    # --- ANATOMICAL PALM CENTROID & WRIST ORIENTATION TRACKING ---
+                    wrist = landmarks[self.WRIST]
+                    index_mcp = landmarks[self.INDEX_FINGER_MCP]
+                    middle_mcp = landmarks[self.MIDDLE_FINGER_MCP]
+                    pinky_mcp = landmarks[17] if len(landmarks) > 17 else index_mcp
 
-                    if self.prev_hand_pos is not None:
-                        raw_dx = current_x - self.prev_hand_pos[0]
-                        raw_dy = current_y - self.prev_hand_pos[1]
-                        # Strict Euclidean distance dead-zone to suppress tremor at rest
-                        euclidean_dist = math.sqrt(raw_dx * raw_dx + raw_dy * raw_dy)
+                    wx = getattr(wrist, "x", 0.0)
+                    wy = getattr(wrist, "y", 0.0)
+                    wz = getattr(wrist, "z", 0.0)
+
+                    imx = getattr(index_mcp, "x", 0.0)
+                    imy = getattr(index_mcp, "y", 0.0)
+                    imz = getattr(index_mcp, "z", 0.0)
+
+                    mmx = getattr(middle_mcp, "x", 0.0)
+                    mmy = getattr(middle_mcp, "y", 0.0)
+                    mmz = getattr(middle_mcp, "z", 0.0)
+
+                    pmx = getattr(pinky_mcp, "x", 0.0)
+                    pmy = getattr(pinky_mcp, "y", 0.0)
+                    pmz = getattr(pinky_mcp, "z", 0.0)
+
+                    # 1. Anatomical palm centroid (stable anchor combining wrist and MCP knuckles)
+                    current_palm_x = (wx + imx + mmx + pmx) * 0.25
+                    current_palm_y = (wy + imy + mmy + pmy) * 0.25
+                    current_palm_z = (wz + imz + mmz + pmz) * 0.25
+
+                    # 2. Palm orientation: roll angle across knuckles (pinky MCP to index MCP)
+                    dx_knuckles = imx - pmx
+                    dy_knuckles = imy - pmy
+                    current_palm_roll = math.atan2(dy_knuckles, dx_knuckles)
+
+                    target_dx = 0.0
+                    target_dy = 0.0
+
+                    if self.prev_palm_pos is not None and self.prev_palm_roll is not None:
+                        # Translational movement of palm centroid
+                        d_pos_x = current_palm_x - self.prev_palm_pos[0]
+                        d_pos_y = current_palm_y - self.prev_palm_pos[1]
+
+                        # Angular orientation delta (wrist roll / palm tilt)
+                        d_roll = current_palm_roll - self.prev_palm_roll
+                        if d_roll > math.pi:
+                            d_roll -= 2.0 * math.pi
+                        elif d_roll < -math.pi:
+                            d_roll += 2.0 * math.pi
+
+                        # Integrate translation with subtle wrist tilt roll (adds intuitive wrist rotation)
+                        raw_dx = d_pos_x + (d_roll * 0.04)
+                        raw_dy = d_pos_y
+
+                        # Clamp extreme single-frame outlier jumps
+                        raw_dx = max(-self.max_rot_delta, min(self.max_rot_delta, raw_dx))
+                        raw_dy = max(-self.max_rot_delta, min(self.max_rot_delta, raw_dy))
+
+                        # Soft-knee Euclidean dead-zone filter: removes tremor without step jump
+                        euclidean_dist = math.hypot(raw_dx, raw_dy)
                         if euclidean_dist > self.rotation_deadzone:
-                            dx = raw_dx
-                            dy = raw_dy
-                            rot_y = round(dx * self.rotation_sensitivity * 100, 2)
-                            rot_x = round(-dy * self.rotation_sensitivity * 100, 2)
+                            ramp = (euclidean_dist - self.rotation_deadzone) / euclidean_dist
+                            target_dx = raw_dx * ramp
+                            target_dy = raw_dy * ramp
+                        else:
+                            target_dx = 0.0
+                            target_dy = 0.0
 
-                    self.prev_hand_pos = (current_x, current_y)
+                    self.prev_palm_pos = (current_palm_x, current_palm_y, current_palm_z)
+                    self.prev_palm_roll = current_palm_roll
+                    self.prev_hand_pos = (current_palm_x, current_palm_y)
 
-                    if abs(rot_y) > 0.001 or abs(rot_x) > 0.001:
+                    # --- LERP / EMA SMOOTHING FILTER ---
+                    if abs(target_dx) > 0.0 or abs(target_dy) > 0.0:
+                        # Active motion: responsive EMA/LERP smoothing
+                        self.smooth_dx = (1.0 - self.rot_lerp_alpha) * self.smooth_dx + self.rot_lerp_alpha * target_dx
+                        self.smooth_dy = (1.0 - self.rot_lerp_alpha) * self.smooth_dy + self.rot_lerp_alpha * target_dy
+                    else:
+                        # Stationary / decelerating: smooth exponential decay towards zero
+                        self.smooth_dx *= self.rot_decay_factor
+                        self.smooth_dy *= self.rot_decay_factor
+                        if abs(self.smooth_dx) < 1e-4:
+                            self.smooth_dx = 0.0
+                        if abs(self.smooth_dy) < 1e-4:
+                            self.smooth_dy = 0.0
+
+                    rot_y = round(self.smooth_dx * self.rotation_sensitivity * 100, 2)
+                    rot_x = round(-self.smooth_dy * self.rotation_sensitivity * 100, 2)
+
+                    if abs(rot_y) > 0.005 or abs(rot_x) > 0.005:
                         raw_candidate = "ROTATE"
 
         else:
             self.prev_two_hand_dist = None
             self.prev_hand_pos = None
+            self.prev_palm_pos = None
+            self.prev_palm_roll = None
             self.prev_pinch_depth = None
+            self.smooth_dx = 0.0
+            self.smooth_dy = 0.0
 
-        # 3. Enforce 5-frame temporal stability threshold (hysteresis buffer)
+        # 3. Enforce temporal stability threshold with ROTATE 2-frame fast activation & release buffer
         confirmed_gesture = self.state_machine.update(raw_candidate)
 
         # 4. Dispatch confirmed gesture commands
@@ -456,11 +555,14 @@ class HoloMedHandTracker:
                 self.pinch_active = False
 
             payload = {
-                "action": "sys.input.rotate",
+                "action": "ROTATE",
                 "command": "ROTATE",
+                "state": "rotating",
                 "target": "HEART",
                 "dx": rot_y,
                 "dy": rot_x,
+                "value": rot_y,
+                "delta": rot_y,
                 "timestamp": current_time,
             }
             if current_time - self.last_sent_time >= self.send_interval:
@@ -481,13 +583,13 @@ class HoloMedHandTracker:
         """Draw Task API landmarks with safe bounds checking and pause/fist styling."""
         height, width, _ = frame.shape
         points = [(int(point.x * width), int(point.y * height)) for point in landmarks]
-        line_color = (0, 255, 255) if is_paused else (0, 210, 255)
-        point_color = (0, 255, 255) if is_paused else (255, 255, 255)
+        line_color = (0, 255, 255)  # Pure Yellow in BGR
+        point_color = (0, 230, 255)  # Bright Yellow in BGR
         for start, end in self.HAND_CONNECTIONS:
             if start < len(points) and end < len(points):
                 cv2.line(frame, points[start], points[end], line_color, 2, cv2.LINE_AA)
         for point in points:
-            cv2.circle(frame, point, 3, point_color, -1, cv2.LINE_AA)
+            cv2.circle(frame, point, 4, point_color, -1, cv2.LINE_AA)
         if is_paused and len(points) > 0:
             wrist_pt = points[0]
             cv2.putText(
@@ -535,21 +637,35 @@ class HoloMedHandTracker:
         )
 
         # Active Gesture Status
-        gesture = status.get("gesture", "IDLE")
+        gesture = status.get("gesture", "SEARCHING HANDS")
         is_paused = status.get("paused", False) or "PAUSED" in gesture
 
         if is_paused:
             gesture_label = "PAUSED (FIST)"
-            status_color = (0, 255, 255)  # Bright Yellow debug text (BGR: 0, 255, 255)
+            status_color = (0, 255, 255)  # Bright Yellow (BGR: 0, 255, 255)
         elif "TWO-HAND PINCH ZOOM" in gesture or status.get("two_hand_pinch") or gesture == "ZOOM":
-            gesture_label = "GESTURE: TWO-HAND PINCH ZOOM"
+            zoom_val = status.get("zoom_factor", 0.0)
+            if abs(zoom_val) > 0.001:
+                gesture_label = f"GESTURE: TWO-HAND PINCH ZOOM ({'+' if zoom_val > 0 else ''}{zoom_val:.2f})"
+            else:
+                gesture_label = "GESTURE: TWO-HAND PINCH ZOOM"
             status_color = (0, 255, 255)  # Cyan HUD highlight
         elif "SLICING" in gesture:
-            gesture_label = f"GESTURE: SLICING (DEPTH)"
-            status_color = (255, 255, 0)  # Cyan in BGR
-        elif status.get("pinch"):
+            s_delta = status.get("slice_delta", 0.0)
+            if abs(s_delta) > 0.0001:
+                gesture_label = f"GESTURE: SLICING (Depth {s_delta:+.4f})"
+            else:
+                gesture_label = "GESTURE: SLICING (Depth)"
+            status_color = (0, 255, 255)
+        elif gesture.startswith("ROTATE"):
             gesture_label = f"GESTURE: {gesture}"
             status_color = (0, 255, 100)
+        elif gesture == "SEARCHING HANDS":
+            gesture_label = "GESTURE: SEARCHING HANDS"
+            status_color = (160, 180, 200)
+        elif gesture == "IDLE":
+            gesture_label = "GESTURE: IDLE"
+            status_color = (180, 180, 180)
         else:
             gesture_label = f"GESTURE: {gesture}"
             status_color = (180, 180, 180)
@@ -562,29 +678,20 @@ class HoloMedHandTracker:
             0.55,
             status_color,
             2,
+            cv2.LINE_AA,
         )
 
-        # UDP Status & Controls info
-        udp_status = f"UDP Stream: {self.udp_ip}:{self.udp_port} [ACTIVE]"
+        # Bottom Status Bar: UDP Stream: 127.0.0.1:5052 [ACTIVE] | Press 'Q' to Quit | 'H' HUD Overlay
+        bottom_status = f"UDP Stream: {self.udp_ip}:{self.udp_port} [ACTIVE] | Press 'Q' to Quit | 'H' HUD Overlay"
         cv2.putText(
             frame,
-            udp_status,
-            (18, h - 18),
+            bottom_status,
+            (18, h - 16),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
-            (200, 220, 240),
+            (200, 230, 255),
             1,
-        )
-
-        ctrl_text = "Press 'Q' to Exit | 'R' Reset | 'H' Overlay"
-        cv2.putText(
-            frame,
-            ctrl_text,
-            (w - 380, h - 18),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (160, 180, 200),
-            1,
+            cv2.LINE_AA,
         )
 
     def _generate_simulation_frame(self, t: float) -> Tuple[cv2.Mat, Dict[str, Any]]:
@@ -694,7 +801,11 @@ class HoloMedHandTracker:
                                 self.draw_landmarks(frame, hand_landmarks, is_paused=hand_is_paused)
                     else:
                         self.prev_hand_pos = None
+                        self.prev_palm_pos = None
+                        self.prev_palm_roll = None
                         self.prev_two_hand_dist = None
+                        self.smooth_dx = 0.0
+                        self.smooth_dy = 0.0
                         if self.pinch_active:
                             self.send_command({
                                 "action": "sys.input.interact",
@@ -728,7 +839,7 @@ class HoloMedHandTracker:
                     time.sleep(0.03)
 
                 # Show preview window
-                cv2.imshow("HoloMed AI - Hand Tracking Preview", frame)
+                cv2.imshow("HOLOMED AI | NEURAL HAND TRACKER", frame)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q"), 27):  # 'q', 'Q' or ESC (27)
